@@ -1,0 +1,54 @@
+{
+  "dataset": {
+    "name": "paaws_1plus1",
+    "dim": 3,
+    "_comment_dim": "3 streams after sensor increment (LeftWrist + RightAnkle + RightThigh). stream_names is set by experiment_config at runtime.",
+    "stream_names": ["LeftWrist", "RightAnkle"]
+  },
+  "full_dataset_streams": [
+    "LeftAnkle", "LeftThigh", "LeftWaist", "LeftWrist",
+    "RightAnkle", "RightThigh", "RightWaist", "RightWrist"
+  ],
+  "encoders": {
+    "default": {"input_shape": [100, 3], "embed_dim": 96}
+  },
+  "stream_to_encoder": {
+    "LeftWrist":  "default",
+    "RightAnkle": "default",
+    "RightThigh": "default"
+  },
+  "training_exclusions": {
+    "Walking": [],
+    "Sitting_Still": [],
+    "Standing_Still": [],
+    "Cycling_Active_Pedaling_Regular_Bicycle": [],
+    "Treadmill_3mph_Free_Walk_Lab": ["Walking"],
+    "Walking_Up_Stairs": ["Walking"],
+    "Walking_Down_Stairs": ["Walking"],
+    "Sit_Writing_Lab": ["Sitting_Still"],
+    "Sit_Typing_Lab": ["Sitting_Still"],
+    "Stand_Conversation_Lab": ["Standing_Still"],
+    "Chopping_Food_Lab": ["Standing_Still"],
+    "Arm_Curls_Lab": ["Standing_Still"],
+    "Lying_On_Back_Lab": [],
+    "Stationary_Biking_300_Lab": ["Cycling_Active_Pedaling_Regular_Bicycle"]
+  },
+  "cooccurrence_graph": {
+    "Walking": [],
+    "Sitting_Still": [],
+    "Standing_Still": [],
+    "Cycling_Active_Pedaling_Regular_Bicycle": [],
+    "Treadmill_3mph_Free_Walk_Lab": ["Walking"],
+    "Walking_Up_Stairs": ["Walking"],
+    "Walking_Down_Stairs": ["Walking"],
+    "Sit_Writing_Lab": ["Sitting_Still"],
+    "Sit_Typing_Lab": ["Sitting_Still"],
+    "Stand_Conversation_Lab": ["Standing_Still"],
+    "Chopping_Food_Lab": ["Standing_Still"],
+    "Arm_Curls_Lab": ["Standing_Still"],
+    "Lying_On_Back_Lab": [],
+    "Stationary_Biking_300_Lab": ["Cycling_Active_Pedaling_Regular_Bicycle"]
+  },
+  "ambiguous_cooccurrence": {"activities": []},
+  "sensor_hints": {"hints": {}}
+}

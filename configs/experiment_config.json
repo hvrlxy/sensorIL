@@ -1,0 +1,66 @@
+{
+  "_comment": "Experiment config for PAAWS 1+1 sensor-incremental pipeline.",
+  "experiment_name": "PAAWS_1plus1_v1",
+  "_comment_streams": "Start with LeftWrist (1 sensor). RightThigh is added at the sensor increment step.",
+  "initial_sensors": ["LeftWrist", "RightAnkle"],
+  "seed_activities": [
+    "Walking",
+    "Sitting_Still",
+    "Standing_Still",
+    "Cycling_Active_Pedaling_Regular_Bicycle"
+  ],
+  "steps": [
+    {
+      "t": 1,
+      "add_activity": "Treadmill_3mph_Free_Walk_Lab",
+      "add_sensors": ["RightThigh"],
+      "_comment": "Sensor increment happens on the first incremental activity. current_streams: [LeftWrist] -> [LeftWrist, RightThigh].",
+      "encoder_data_fractions": [0.05, 0.1, 0.2],
+      "missing_sensor_scenarios": [
+        ["RightThigh"]
+      ]
+    },
+    {
+      "t": 2,
+      "add_activity": "Walking_Up_Stairs"
+    },
+    {
+      "t": 3,
+      "add_activity": "Walking_Down_Stairs"
+    },
+    {
+      "t": 4,
+      "add_activity": "Sit_Writing_Lab"
+    },
+    {
+      "t": 5,
+      "add_activity": "Sit_Typing_Lab"
+    },
+    {
+      "t": 6,
+      "add_activity": "Stand_Conversation_Lab"
+    },
+    {
+      "t": 7,
+      "add_activity": "Chopping_Food_Lab"
+    },
+    {
+      "t": 8,
+      "add_activity": "Arm_Curls_Lab"
+    },
+    {
+      "t": 9,
+      "add_activity": "Lying_On_Back_Lab"
+    },
+    {
+      "t": 10,
+      "add_activity": "Stationary_Biking_300_Lab"
+    }
+  ],
+"encoder_sweep_hparams": {
+    "epochs": 50,
+    "learning_rate": 1e-3,
+    "batch_size": 512,
+    "early_stopping_patience": 10
+}
+}

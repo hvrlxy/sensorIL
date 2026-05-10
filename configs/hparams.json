@@ -1,0 +1,73 @@
+{
+  "_comment": "Hyperparameters for sensor-incremental HITL-HAR. Extends the base hparams with projector-specific settings.",
+  "training": {
+    "seed_head_epochs": 50,
+    "incremental_head_epochs": 20,
+    "retrain_epochs": 20,
+    "learning_rate": 0.001,
+    "retrain_learning_rate": 0.0001,
+    "batch_size": 200,
+    "early_stopping_patience": 10,
+    "focal_gamma": 2.0,
+    "max_class_weight": 10.0
+  },
+  "threshold": {
+    "strategy": "f1",
+    "min": 0.2,
+    "max": 0.8,
+    "fallback": 0.5,
+    "seed_nudge_factor": 0.9
+  },
+  "cooccurrence": {
+    "fire_pct_threshold": 0.5
+  },
+  "replay_buffer": {
+    "max_positives_per_activity": null
+  },
+  "projector": {
+    "hidden_dim": 256,
+    "latent_dim": 128,
+    "noise_dim": 64,
+    "_comment_hidden": "Hidden layer size of the MLP projector.",
+    "bootstrap_epochs": 50,
+    "_comment_bootstrap": "Epochs for initial self-supervised projector training when new sensor is added.",
+    "finetune_epochs": 20,
+    "_comment_finetune": "Epochs for projector fine-tuning after each co-occurrence confirmation.",
+    "learning_rate": 0.001,
+    "finetune_learning_rate": 0.0001,
+    "consistency_weight": 1.0,
+    "_comment_consistency": "Lambda for classification consistency loss term during fine-tuning (head should still fire on projected features).",
+    "early_stopping_patience": 10,
+    "batch_size": 200
+  },
+  "hitl_simulation": {
+    "confirmation_source": "ground_truth",
+    "label_noise_rate": 0.0,
+    "me_source": "ground_truth",
+    "annotation_budget": null
+  },
+  "ablation": {
+    "conditions": [
+      {
+        "name": "Baseline (1 sensor, no projector)",
+        "retraining": false,
+        "projector": false
+      },
+      {
+        "name": "HITL retraining only",
+        "retraining": true,
+        "projector": false
+      },
+      {
+        "name": "Projector bootstrap only",
+        "retraining": true,
+        "projector": "bootstrap"
+      },
+      {
+        "name": "Projector + co-occ fine-tuning",
+        "retraining": true,
+        "projector": "finetune"
+      }
+    ]
+  }
+}

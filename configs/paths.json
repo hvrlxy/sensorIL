@@ -1,0 +1,16 @@
+{
+  "data_dir": "/mnt/storage/hitl_experiments/paaws_tuned/",
+  "working_dir": "./output/",
+  "figs_dir": "./figs/",
+  "participants": [
+    "DS_11"
+  ],
+  "unlabeled_data_dir": "/mnt/storage/hitl_experiments/paaws_fl_tuned/DS_10",
+  "encoder_type": "simclr_pt",
+  "fusion": "early",
+  "dataset_config": "./configs/paaws_1plus1.json",
+  "hparams_config": "./configs/hparams.json",
+  "encoder_paths": {
+    "default": "./models/20260320-130313_simclr.pt"
+  }
+}

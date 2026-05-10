@@ -1,0 +1,15 @@
+*.pt
+*.pth
+*.pkl
+*.h5
+*.npy
+*.npz
+*.csv
+data/
+datasets/
+checkpoints/
+outputs/
+results/
+wandb/
+__pycache__/
+*.pyc
