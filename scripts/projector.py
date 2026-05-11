@@ -295,78 +295,10 @@ class StreamProjectionHead(nn.Module):
 # LOSS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _multiscale_derivative_loss(pred: torch.Tensor,
-                                 target: torch.Tensor,
-                                 scales: list = [1, 2, 4, 8]) -> torch.Tensor:
-    """
-    Multi-scale derivative loss.
-
-    Computes finite differences at multiple temporal scales and matches
-    them between predicted and target signals.  Captures shape similarity
-    at different timescales simultaneously:
-      scale=1 : rapid jerk / heel-strike impulses
-      scale=2 : stride-level changes
-      scale=4 : gait cycle rhythm
-      scale=8 : slow postural / push-up wave shape
-
-    Unlike FFT which is global, this is local and directly measures
-    whether the signal changes in the same way at each timescale.
-
-    pred, target : (B, T, C)
-    """
-    loss = torch.tensor(0.0, device=pred.device)
-    for s in scales:
-        dp = pred[:,   s:, :] - pred[:,   :-s, :]    # (B, T-s, C)
-        dt = target[:, s:, :] - target[:, :-s, :]
-        loss = loss + F.l1_loss(dp, dt)
-    return loss / len(scales)
-
-
-def _haar_wavelet_loss(pred: torch.Tensor,
-                       target: torch.Tensor,
-                       levels: int = 4) -> torch.Tensor:
-    """
-    Haar wavelet loss.
-
-    Decomposes both predicted and target signals into Haar wavelet
-    coefficients (approximation + detail at each level) and matches them.
-
-    Wavelets are localized in both time AND frequency — a slow push-up
-    wave and a fast heartbeat signal have very different wavelet
-    representations even if their FFT magnitudes overlap.
-
-    Level 1 detail : high-frequency impulses (T/2 coefficients)
-    Level 2 detail : mid-frequency (T/4 coefficients)
-    Level 3 detail : stride rhythm (T/8 coefficients)
-    Level 4 approx : slow trend / DC (T/16 coefficients)
-
-    pred, target : (B, T, C)  — T must be divisible by 2^levels
-    """
-    loss = torch.tensor(0.0, device=pred.device)
-    p, t = pred, target
-
-    for _ in range(levels):
-        if p.shape[1] < 2:
-            break
-        # Ensure even length
-        L = (p.shape[1] // 2) * 2
-        p_e, t_e = p[:, :L, :], t[:, :L, :]
-
-        # Haar: approx = (even + odd) / 2,  detail = (even - odd) / 2
-        approx_p = (p_e[:, 0::2, :] + p_e[:, 1::2, :]) * 0.5
-        detail_p = (p_e[:, 0::2, :] - p_e[:, 1::2, :]) * 0.5
-        approx_t = (t_e[:, 0::2, :] + t_e[:, 1::2, :]) * 0.5
-        detail_t = (t_e[:, 0::2, :] - t_e[:, 1::2, :]) * 0.5
-
-        # Match detail coefficients at this level
-        loss = loss + F.l1_loss(detail_p, detail_t)
-
-        # Recurse on approximation
-        p, t = approx_p, approx_t
-
-    # Match final approximation (slow trend / DC)
-    loss = loss + F.l1_loss(p, t)
-    return loss / (levels + 1)
+def _spectral_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    P = torch.fft.rfft(pred,   dim=1).abs()
+    T = torch.fft.rfft(target, dim=1).abs()
+    return F.l1_loss(P, T)
 
 def _derivative_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.l1_loss(pred[:, 1:, :] - pred[:, :-1, :],
@@ -377,38 +309,17 @@ def _distribution_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor
 
 def reconstruction_loss(
     pred: torch.Tensor, target: torch.Tensor,
-    spectral_weight:     float = 0.0,    # disabled — replaced by wavelet+multiscale
-    deriv_weight:        float = 0.5,    # fine-scale derivative (scale=1)
-    dist_weight:         float = 1.0,
-    orientation_weight:  float = 1.0,
-    multiscale_weight:   float = 1.0,
-    wavelet_weight:      float = 1.0,
-    kurtosis_weight:     float = 0.0,
-    envelope_weight:     float = 0.0,
+    spectral_weight: float = 1.0,
+    deriv_weight:    float = 0.5,
+    dist_weight:     float = 1.0,
+    **kwargs,
 ) -> tuple:
-    """
-    Reconstruction loss with multi-scale derivative and Haar wavelet terms
-    replacing the FFT spectral loss.
-
-    multiscale_weight: shape similarity across timescales (1,2,4,8 steps)
-    wavelet_weight   : time-frequency localized shape matching
-    deriv_weight     : fine-scale (scale=1) first differences
-    dist_weight      : std matching (amplitude)
-    orientation_weight: DC/gravity anchor (mean matching)
-    """
-    l1          = F.l1_loss(pred, target)
-    deriv       = _derivative_loss(pred, target)
-    dist        = _distribution_loss(pred, target)
-    orientation = F.l1_loss(pred.mean(dim=1), target.mean(dim=1))
-    multiscale  = _multiscale_derivative_loss(pred, target)
-    wavelet     = _haar_wavelet_loss(pred, target)
-    total       = (l1
-                   + deriv_weight       * deriv
-                   + dist_weight        * dist
-                   + orientation_weight * orientation
-                   + multiscale_weight  * multiscale
-                   + wavelet_weight     * wavelet)
-    return total, l1, deriv, dist, orientation, multiscale, wavelet
+    l1       = F.l1_loss(pred, target)
+    spectral = _spectral_loss(pred, target)
+    deriv    = _derivative_loss(pred, target)
+    dist     = _distribution_loss(pred, target)
+    total    = l1 + spectral_weight*spectral + deriv_weight*deriv + dist_weight*dist
+    return total, l1, spectral, deriv, dist
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -421,6 +332,7 @@ def train_raw_encoder(
     save_path: str,
     epochs: int = 50, lr: float = 1e-3, batch_size: int = 256,
     early_stopping_patience: int = 10,
+    spectral_weight: float = 1.0,
     deriv_weight:    float = 0.5,
     dist_weight:     float = 1.0,
     **kwargs,
@@ -435,6 +347,11 @@ def train_raw_encoder(
     N       = len(X_tr)
     best_val, best_ckpt, patience_count = float("inf"), None, 0
     rng = np.random.default_rng(42)
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark     = False
 
     for epoch in range(1, epochs + 1):
         encoder.train()
@@ -442,8 +359,8 @@ def train_raw_encoder(
         if epoch == 1:
             P = getattr(encoder, 'P', '?')
             print(f"  [MAE] Epoch 1  batch={batch_size}  lr={lr}  "
-                  f"deriv={deriv_weight}  dist={dist_weight}  "
-                  f"multiscale=1.0  wavelet=1.0  S={S}  P={P}  "
+                  f"spectral={spectral_weight}  deriv={deriv_weight}  "
+                  f"dist={dist_weight}  S={S}  P={P}  "
                   f"seq_len={S*(P if isinstance(P,int) else 0)}", flush=True)
 
         epoch_loss, n_batches = 0.0, 0
@@ -454,32 +371,23 @@ def train_raw_encoder(
             pred   = encoder(batch, masked_stream=m)
 
             with torch.no_grad():
-                win_var  = target.var(dim=1).mean(dim=-1)          # (B,)
-                var_med  = win_var.median()
-                high     = win_var >= var_med                       # top 50%
-                low      = ~high                                    # bottom 50%
+                win_var = target.var(dim=1).mean(dim=-1)
+                w       = win_var / (win_var.mean() + 1e-8)
+                w       = w.clamp(0.2, 5.0)
+                w       = w / w.mean()
 
-            def _batch_loss(mask):
-                if mask.sum() == 0:
-                    return pred.sum() * 0.0
-                p, t = pred[mask], target[mask]
-                l1_m = F.l1_loss(p, t)
-                _, l1_m, deriv, dist, orient, ms, wav = reconstruction_loss(
-                    p, t,
-                    deriv_weight=deriv_weight,
-                    dist_weight=dist_weight,
-                )
-                return (l1_m
-                        + deriv_weight * deriv
-                        + dist_weight  * dist
-                        + orient
-                        + ms
-                        + wav)
-
-            # Fixed 50/50 split — high-variance windows always contribute
-            # equally regardless of their proportion in the batch.
-            # Prevents sedentary majority from diluting cycling signal.
-            loss = 0.5 * _batch_loss(high) + 0.5 * _batch_loss(low)
+            per_sample_l1 = (pred - target).abs().mean(dim=(1, 2))
+            l1_weighted   = (per_sample_l1 * w).mean()
+            _, _, spec, deriv, dist = reconstruction_loss(
+                pred, target,
+                spectral_weight=spectral_weight,
+                deriv_weight=deriv_weight,
+                dist_weight=dist_weight,
+            )
+            loss = (l1_weighted
+                    + spectral_weight * spec
+                    + deriv_weight    * deriv
+                    + dist_weight     * dist)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
@@ -498,10 +406,103 @@ def train_raw_encoder(
                 tgt    = b[:, :, pm, :]
                 pred   = encoder(b, masked_stream=pm)
                 v, *_  = reconstruction_loss(pred, tgt,
+                    spectral_weight=spectral_weight,
                     deriv_weight=deriv_weight,
                     dist_weight=dist_weight)
                 val_loss += v.item()
                 n_val    += 1
+        val_loss /= max(1, n_val)
+
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"  [MAE] epoch={epoch:3d}  "
+                  f"train={epoch_loss/max(1,n_batches):.5f}  "
+                  f"val={val_loss:.5f}", flush=True)
+
+        if val_loss < best_val:
+            best_val       = val_loss
+            best_ckpt      = {k: v.cpu().clone() for k, v in encoder.state_dict().items()}
+            patience_count = 0
+        else:
+            patience_count += 1
+            if patience_count >= early_stopping_patience:
+                print(f"  [MAE] Early stop epoch {epoch}  best_val={best_val:.6f}")
+                break
+
+    if epoch == epochs:
+        print(f"  [MAE] Done epoch {epoch}  best_val={best_val:.6f}")
+    if best_ckpt is not None:
+        encoder.load_state_dict(best_ckpt)
+
+    torch.save(_checkpoint(encoder), save_path)
+    return encoder
+    print(f"  [MAE] X_train={X_train.shape}  X_val={X_val.shape}", flush=True)
+    S       = X_train.shape[2]
+    encoder = encoder.to(DEVICE)
+    opt     = torch.optim.AdamW(encoder.parameters(), lr=lr, weight_decay=1e-4)
+    sched   = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=lr*0.05)
+    X_tr    = torch.from_numpy(X_train.astype(np.float32))
+    X_vl    = torch.from_numpy(X_val.astype(np.float32))
+    N       = len(X_tr)
+    best_val, best_ckpt, patience_count = float("inf"), None, 0
+    rng = np.random.default_rng(42)
+
+    for epoch in range(1, epochs + 1):
+        encoder.train()
+        idx = torch.randperm(N)
+        if epoch == 1:
+            P = getattr(encoder, 'P', '?')
+            print(f"  [MAE] Epoch 1  batch={batch_size}  lr={lr}  "
+                  f"spectral={spectral_weight}  deriv={deriv_weight}  "
+                  f"dist={dist_weight}  S={S}  P={P}  "
+                  f"seq_len={S*(P if isinstance(P,int) else 0)}", flush=True)
+
+        epoch_loss, n_batches = 0.0, 0
+        for i in range(0, N, batch_size):
+            batch  = X_tr[idx[i:i+batch_size]].to(DEVICE)
+            m      = int(rng.integers(0, S))
+            target = batch[:, :, m, :]
+            pred   = encoder(batch, masked_stream=m)
+
+            with torch.no_grad():
+                win_var = target.var(dim=1).mean(dim=-1)
+                w       = win_var / (win_var.mean() + 1e-8)
+                w       = w.clamp(0.2, 5.0)
+                w       = w / w.mean()
+
+            per_sample_l1 = (pred - target).abs().mean(dim=(1, 2))
+            l1_weighted   = (per_sample_l1 * w).mean()
+            _, _, spec, deriv, dist = reconstruction_loss(
+                pred, target,
+                spectral_weight=spectral_weight,
+                deriv_weight=deriv_weight,
+                dist_weight=dist_weight,
+            )
+            loss = (l1_weighted
+                    + spectral_weight * spec
+                    + deriv_weight    * deriv
+                    + dist_weight     * dist)
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
+            opt.step()
+            epoch_loss += loss.item()
+            n_batches  += 1
+
+        sched.step()
+
+        encoder.eval()
+        val_loss, n_val = 0.0, 0
+        pm = S - 1
+        with torch.no_grad():
+            for i in range(0, len(X_vl), batch_size):
+                b      = X_vl[i:i+batch_size].to(DEVICE)
+                tgt    = b[:, :, pm, :]
+                pred   = encoder(b, masked_stream=pm)
+                v, *_  = reconstruction_loss(pred, tgt,
+                    spectral_weight=spectral_weight,
+                    deriv_weight=deriv_weight,
+                    dist_weight=dist_weight)
+                val_loss += v.item()
                 n_val    += 1
         val_loss /= max(1, n_val)
 
@@ -699,10 +700,8 @@ def train_projection_head(
 ) -> CrossMaskedTransformer:
     """
     Train the projection head on top of a frozen MAE backbone.
-
     Objective: given known streams, predict the masked stream's MAE embedding.
-    Self-supervised — no labels needed.  Backbone frozen, only proj_head updated.
-
+    Backbone frozen, only proj_head updated.
     X_train, X_val : (N, T, S, C) raw signals — all streams present.
     """
     if not hasattr(encoder, "proj_head"):
@@ -711,7 +710,6 @@ def train_projection_head(
     print(f"  [ProjHead] Training projection head  "
           f"X_train={X_train.shape}  X_val={X_val.shape}", flush=True)
 
-    # Freeze MAE backbone
     for p in encoder.parameters():
         p.requires_grad = False
     for p in encoder.proj_head.parameters():
@@ -738,23 +736,20 @@ def train_projection_head(
         n_batches  = 0
 
         for i in range(0, N, batch_size):
-            batch    = X_tr[idx[i:i+batch_size]].to(DEVICE)
-
-            m_local  = int(rng.integers(0, S))
-            m_global = stream_indices[m_local]
+            batch        = X_tr[idx[i:i+batch_size]].to(DEVICE)
+            m_local      = int(rng.integers(0, S))
+            m_global     = stream_indices[m_local]
             known_local  = [s for s in range(S) if s != m_local]
             known_global = [stream_indices[s] for s in known_local]
 
             with torch.no_grad():
                 Z_all    = encoder.encode_features(batch, stream_indices)
                 Z_target = encoder.proj_head(Z_all)[:, m_global, :]
-
                 X_known  = batch[:, :, known_local, :]
                 Z_known  = encoder.encode_features(X_known, known_global)
 
             Z_pred = encoder.proj_head(Z_known)[:, m_global, :]
-
-            loss = F.mse_loss(Z_pred, Z_target)
+            loss   = F.mse_loss(Z_pred, Z_target)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -763,7 +758,6 @@ def train_projection_head(
 
         sched.step()
 
-        # Validation
         encoder.proj_head.eval()
         val_loss, n_val = 0.0, 0
         pm_local  = S - 1
@@ -807,8 +801,6 @@ def train_projection_head(
     torch.save(_checkpoint(encoder), save_path)
     print(f"  [ProjHead] Done  best_val={best_val:.6f}")
     return encoder
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # MAE FEATURE EXTRACTION  (replaces SimCLR for downstream tasks)
 # ─────────────────────────────────────────────────────────────────────────────

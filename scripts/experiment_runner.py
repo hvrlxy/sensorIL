@@ -260,32 +260,12 @@ def run_encoder_fraction_sweep(
 
     hp  = cfg.PROJECTOR_HPARAMS
     rng = np.random.default_rng(cfg.SEED)
-
-    # Variance-stratified subsampling — maintain fixed proportion of
-    # high-variance (active) windows regardless of fraction size.
-    # Prevents cycling/dynamic signals from being diluted as data grows.
-    win_var    = X_unlabeled_train.var(axis=(1, 2, 3))          # (N,)
-    var_thresh = float(np.percentile(win_var, 50))              # median split
-    high_idx   = np.where(win_var >= var_thresh)[0]
-    low_idx    = np.where(win_var <  var_thresh)[0]
-    high_idx   = rng.permutation(high_idx)
-    low_idx    = rng.permutation(low_idx)
-    # Target: 40% high-variance, 60% low-variance in every fraction
-    HIGH_RATIO = 0.40
+    X_unlabeled_shuffled = X_unlabeled_train[rng.permutation(N_total)]
 
     for frac in fractions:
         n_use    = max(1, int(N_total * frac))
-        n_high   = min(int(n_use * HIGH_RATIO), len(high_idx))
-        n_low    = min(n_use - n_high, len(low_idx))
-        X_frac   = np.concatenate([
-            X_unlabeled_train[high_idx[:n_high]],
-            X_unlabeled_train[low_idx[:n_low]],
-        ], axis=0)
-        # Shuffle so high/low aren't all at start of array
-        X_frac   = X_frac[rng.permutation(len(X_frac))]
+        X_frac   = X_unlabeled_shuffled[:n_use]
         frac_pct = f"{frac:.0%}"
-        print(f"  [{frac_pct}] n={len(X_frac)}  high_var={n_high}({n_high/len(X_frac):.0%})  "
-              f"low_var={n_low}({n_low/len(X_frac):.0%})")
 
         projector = build_projector(
                 n_streams_in  = n_initial,
@@ -677,6 +657,10 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
     torch.manual_seed(cfg.SEED)
     np.random.seed(cfg.SEED)
     random.seed(cfg.SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.SEED)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark     = False
 
     exp_name = exp_config.get("experiment_name", "experiment")
     logger   = RunLogger(cfg.WORKING_DIR, run_id=TIMESTAMP,
@@ -746,23 +730,11 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
 
         print(f"\nTraining MAE-1 on {len(X_ul_init_tr)} unlabeled windows "
               f"({initial_sensors})...")
-        # Cap at 10% using variance-stratified subsampling — same strategy
-        # as the sweep to ensure consistent representation of active windows
-        n_mae1     = max(1, int(len(X_ul_init_tr) * 0.10))
-        rng_mae1   = np.random.default_rng(cfg.SEED)
-        win_var_1  = X_ul_init_tr.var(axis=(1, 2, 3))
-        var_thr_1  = float(np.percentile(win_var_1, 50))
-        hi1        = rng_mae1.permutation(np.where(win_var_1 >= var_thr_1)[0])
-        lo1        = rng_mae1.permutation(np.where(win_var_1 <  var_thr_1)[0])
-        n_hi1      = min(int(n_mae1 * 0.40), len(hi1))
-        n_lo1      = min(n_mae1 - n_hi1, len(lo1))
-        X_ul_init_tr_sub = np.concatenate([
-            X_ul_init_tr[hi1[:n_hi1]],
-            X_ul_init_tr[lo1[:n_lo1]],
-        ], axis=0)
-        X_ul_init_tr_sub = X_ul_init_tr_sub[rng_mae1.permutation(len(X_ul_init_tr_sub))]
-        print(f"  Using {len(X_ul_init_tr_sub)}/{len(X_ul_init_tr)} windows "
-              f"(10%, stratified: {n_hi1} high-var + {n_lo1} low-var)")
+        # Cap at 10% to match the sweep fractions — consistent comparison
+        n_mae1 = max(1, int(len(X_ul_init_tr) * 0.10))
+        rng_mae1 = np.random.default_rng(cfg.SEED)
+        X_ul_init_tr_sub = X_ul_init_tr[rng_mae1.permutation(len(X_ul_init_tr))[:n_mae1]]
+        print(f"  Using {n_mae1}/{len(X_ul_init_tr)} windows (10%)")
         # Build a 1-stream MAE — n_streams_in=0 (no missing, just reconstruct)
         # We reuse build_projector with n_streams_in=0, n_streams_out=n_init
         # The MAE learns cross-patch temporal structure on 1-stream data.
@@ -971,8 +943,20 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                 )
                 history.setdefault("encoder_sweeps", {})[new_sensor] = sweep_results
 
-                # Use best available fraction checkpoint (highest fraction trained)
-                best_frac_key = max(sweep_results.keys())
+                # Select best fraction by average F1 gain across all activities
+                def _avg_delta(res):
+                    metrics = res.get("full_sensor_metrics", {})
+                    e1      = seed_metrics_e1 or {}
+                    deltas  = []
+                    for act, m in metrics.items():
+                        e1_f1 = e1.get(act, {}).get("f1", 0.0)
+                        deltas.append(m.get("f1", 0.0) - e1_f1)
+                    return float(np.mean(deltas)) if deltas else -999.0
+
+                best_frac_key = max(sweep_results.keys(),
+                                    key=lambda k: _avg_delta(sweep_results[k]))
+                print(f"  Best fraction: {best_frac_key:.0%} "
+                      f"(avg Δ={_avg_delta(sweep_results[best_frac_key]):.4f})")
                 best_frac_pct = f"{best_frac_key:.0%}".replace('%', 'pct')
                 best_ckpt = os.path.join(
                     cfg.WORKING_DIR,
