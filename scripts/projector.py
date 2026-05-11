@@ -295,19 +295,78 @@ class StreamProjectionHead(nn.Module):
 # LOSS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _spectral_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def _multiscale_derivative_loss(pred: torch.Tensor,
+                                 target: torch.Tensor,
+                                 scales: list = [1, 2, 4, 8]) -> torch.Tensor:
     """
-    Normalized spectral distribution loss — compares relative distribution
-    of energy across frequencies rather than absolute magnitudes.
-    Prevents the model from defaulting to the average training cadence
-    (e.g. walking ~1.8 Hz) regardless of input frequency.
-    Normalization is per-axis independently (dim=1 = frequency bins).
+    Multi-scale derivative loss.
+
+    Computes finite differences at multiple temporal scales and matches
+    them between predicted and target signals.  Captures shape similarity
+    at different timescales simultaneously:
+      scale=1 : rapid jerk / heel-strike impulses
+      scale=2 : stride-level changes
+      scale=4 : gait cycle rhythm
+      scale=8 : slow postural / push-up wave shape
+
+    Unlike FFT which is global, this is local and directly measures
+    whether the signal changes in the same way at each timescale.
+
+    pred, target : (B, T, C)
     """
-    P = torch.fft.rfft(pred,   dim=1).abs()           # (B, F, C)
-    T = torch.fft.rfft(target, dim=1).abs()
-    P = P / (P.sum(dim=1, keepdim=True) + 1e-8)       # normalize per axis
-    T = T / (T.sum(dim=1, keepdim=True) + 1e-8)
-    return F.l1_loss(P, T)
+    loss = torch.tensor(0.0, device=pred.device)
+    for s in scales:
+        dp = pred[:,   s:, :] - pred[:,   :-s, :]    # (B, T-s, C)
+        dt = target[:, s:, :] - target[:, :-s, :]
+        loss = loss + F.l1_loss(dp, dt)
+    return loss / len(scales)
+
+
+def _haar_wavelet_loss(pred: torch.Tensor,
+                       target: torch.Tensor,
+                       levels: int = 4) -> torch.Tensor:
+    """
+    Haar wavelet loss.
+
+    Decomposes both predicted and target signals into Haar wavelet
+    coefficients (approximation + detail at each level) and matches them.
+
+    Wavelets are localized in both time AND frequency — a slow push-up
+    wave and a fast heartbeat signal have very different wavelet
+    representations even if their FFT magnitudes overlap.
+
+    Level 1 detail : high-frequency impulses (T/2 coefficients)
+    Level 2 detail : mid-frequency (T/4 coefficients)
+    Level 3 detail : stride rhythm (T/8 coefficients)
+    Level 4 approx : slow trend / DC (T/16 coefficients)
+
+    pred, target : (B, T, C)  — T must be divisible by 2^levels
+    """
+    loss = torch.tensor(0.0, device=pred.device)
+    p, t = pred, target
+
+    for _ in range(levels):
+        if p.shape[1] < 2:
+            break
+        # Ensure even length
+        L = (p.shape[1] // 2) * 2
+        p_e, t_e = p[:, :L, :], t[:, :L, :]
+
+        # Haar: approx = (even + odd) / 2,  detail = (even - odd) / 2
+        approx_p = (p_e[:, 0::2, :] + p_e[:, 1::2, :]) * 0.5
+        detail_p = (p_e[:, 0::2, :] - p_e[:, 1::2, :]) * 0.5
+        approx_t = (t_e[:, 0::2, :] + t_e[:, 1::2, :]) * 0.5
+        detail_t = (t_e[:, 0::2, :] - t_e[:, 1::2, :]) * 0.5
+
+        # Match detail coefficients at this level
+        loss = loss + F.l1_loss(detail_p, detail_t)
+
+        # Recurse on approximation
+        p, t = approx_p, approx_t
+
+    # Match final approximation (slow trend / DC)
+    loss = loss + F.l1_loss(p, t)
+    return loss / (levels + 1)
 
 def _derivative_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.l1_loss(pred[:, 1:, :] - pred[:, :-1, :],
@@ -318,24 +377,38 @@ def _distribution_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor
 
 def reconstruction_loss(
     pred: torch.Tensor, target: torch.Tensor,
-    spectral_weight:     float = 1.0,
-    deriv_weight:        float = 0.5,
+    spectral_weight:     float = 0.0,    # disabled — replaced by wavelet+multiscale
+    deriv_weight:        float = 0.5,    # fine-scale derivative (scale=1)
     dist_weight:         float = 1.0,
     orientation_weight:  float = 1.0,
+    multiscale_weight:   float = 1.0,
+    wavelet_weight:      float = 1.0,
     kurtosis_weight:     float = 0.0,
     envelope_weight:     float = 0.0,
 ) -> tuple:
+    """
+    Reconstruction loss with multi-scale derivative and Haar wavelet terms
+    replacing the FFT spectral loss.
+
+    multiscale_weight: shape similarity across timescales (1,2,4,8 steps)
+    wavelet_weight   : time-frequency localized shape matching
+    deriv_weight     : fine-scale (scale=1) first differences
+    dist_weight      : std matching (amplitude)
+    orientation_weight: DC/gravity anchor (mean matching)
+    """
     l1          = F.l1_loss(pred, target)
-    spectral    = _spectral_loss(pred, target)
     deriv       = _derivative_loss(pred, target)
     dist        = _distribution_loss(pred, target)
     orientation = F.l1_loss(pred.mean(dim=1), target.mean(dim=1))
+    multiscale  = _multiscale_derivative_loss(pred, target)
+    wavelet     = _haar_wavelet_loss(pred, target)
     total       = (l1
-                   + spectral_weight    * spectral
                    + deriv_weight       * deriv
                    + dist_weight        * dist
-                   + orientation_weight * orientation)
-    return total, l1, spectral, deriv, dist, orientation
+                   + orientation_weight * orientation
+                   + multiscale_weight  * multiscale
+                   + wavelet_weight     * wavelet)
+    return total, l1, deriv, dist, orientation, multiscale, wavelet
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,7 +421,6 @@ def train_raw_encoder(
     save_path: str,
     epochs: int = 50, lr: float = 1e-3, batch_size: int = 256,
     early_stopping_patience: int = 10,
-    spectral_weight: float = 1.0,
     deriv_weight:    float = 0.5,
     dist_weight:     float = 1.0,
     **kwargs,
@@ -370,8 +442,8 @@ def train_raw_encoder(
         if epoch == 1:
             P = getattr(encoder, 'P', '?')
             print(f"  [MAE] Epoch 1  batch={batch_size}  lr={lr}  "
-                  f"spectral={spectral_weight}  deriv={deriv_weight}  "
-                  f"dist={dist_weight}  S={S}  P={P}  "
+                  f"deriv={deriv_weight}  dist={dist_weight}  "
+                  f"multiscale=1.0  wavelet=1.0  S={S}  P={P}  "
                   f"seq_len={S*(P if isinstance(P,int) else 0)}", flush=True)
 
         epoch_loss, n_batches = 0.0, 0
@@ -392,17 +464,17 @@ def train_raw_encoder(
                     return pred.sum() * 0.0
                 p, t = pred[mask], target[mask]
                 l1_m = F.l1_loss(p, t)
-                _, _, spec, deriv, dist, orient = reconstruction_loss(
+                _, l1_m, deriv, dist, orient, ms, wav = reconstruction_loss(
                     p, t,
-                    spectral_weight=spectral_weight,
                     deriv_weight=deriv_weight,
                     dist_weight=dist_weight,
                 )
                 return (l1_m
-                        + spectral_weight * spec
-                        + deriv_weight    * deriv
-                        + dist_weight     * dist
-                        + orient)
+                        + deriv_weight * deriv
+                        + dist_weight  * dist
+                        + orient
+                        + ms
+                        + wav)
 
             # Fixed 50/50 split — high-variance windows always contribute
             # equally regardless of their proportion in the batch.
@@ -426,7 +498,6 @@ def train_raw_encoder(
                 tgt    = b[:, :, pm, :]
                 pred   = encoder(b, masked_stream=pm)
                 v, *_  = reconstruction_loss(pred, tgt,
-                    spectral_weight=spectral_weight,
                     deriv_weight=deriv_weight,
                     dist_weight=dist_weight)
                 val_loss += v.item()
