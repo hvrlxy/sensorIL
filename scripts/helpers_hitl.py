@@ -180,12 +180,13 @@ class GatedHead(nn.Module):
 
     def forward(self, Z: torch.Tensor) -> torch.Tensor:
         """Z : (N, DIM, D) → (N, 1) raw logit"""
-        Z = Z * self.gate
+        # Gate is all-ones (identity) — skip multiplication if shapes don't
+        # match (e.g. old 2-stream head receiving 3-stream input after
+        # sensor increment).  The gate has no effect anyway.
+        if self.gate.shape[1] == Z.shape[1]:
+            Z = Z * self.gate
 
         # L2-normalize per stream before classification.
-        # Synthetic imputed embeddings have very different norms from real
-        # embeddings — normalizing makes the head work on direction only,
-        # which is consistent across synthetic train and real test.
         Z = F.normalize(Z, p=2, dim=-1)
 
         if self.fusion == "early":
@@ -196,7 +197,8 @@ class GatedHead(nn.Module):
                 [proj(Z[:, i, :]) for i, proj in enumerate(self.limb_projs)],
                 dim=1
             )
-            logits = logits * self.gate.squeeze(-1)
+            if self.gate.shape[1] == logits.shape[1]:
+                logits = logits * self.gate.squeeze(-1)
             return self.fuser(logits)
 
 

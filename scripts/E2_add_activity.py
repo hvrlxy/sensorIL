@@ -116,24 +116,21 @@ def save_state(state: dict, state_path: str):
 def _load_passive_into_buffer(
     unlabeled_buffer,
     cfg,
-    encoders,
-    feat_cache,
+    encoders,          # kept for API compat — no longer used
+    feat_cache,        # kept for API compat — no longer used
     n_streams_out: int,
-    embed_dim: int,
+    embed_dim: int,    # kept for API compat — no longer used
     np_val_raw,
     timestamp: str,
 ) -> None:
     """
     Scan cfg.UNLABELED_DATA_DIR for .npy files not yet ingested and add their
-    features to the unlabeled buffer.
+    RAW SIGNALS to the unlabeled buffer.
 
-    File format: (N, T, m+1, C) raw sensor windows — same layout as the labeled
-    dataset.  The encoder is applied to extract (N, m+1, D) features, which are
-    what the masked encoder trains on.
+    The buffer now stores raw (N, T, S, C) windows — the MAE trains directly
+    on raw signals, no SimCLR feature extraction needed.
 
     Gracefully skips if UNLABELED_DATA_DIR is not configured or is empty.
-    Tracks ingested filenames on the buffer object so the same file is never
-    processed twice across E2 invocations.
     """
     if unlabeled_buffer is None:
         return
@@ -142,7 +139,6 @@ def _load_passive_into_buffer(
         return
 
     from pathlib import Path
-    from encoder import extract_all_features as _eaf
 
     passive_dir = Path(data_dir)
     if not passive_dir.exists():
@@ -160,8 +156,9 @@ def _load_passive_into_buffer(
     if not new_files:
         return
 
-    idx_full = cfg.get_stream_indices(cfg.FULL_STREAM_NAMES)
-    n_added  = 0
+    full_stream_cols = [cfg.FULL_DATASET_STREAMS.index(s)
+                        for s in cfg.FULL_STREAM_NAMES]
+    n_added = 0
 
     for fpath in new_files:
         try:
@@ -177,13 +174,13 @@ def _load_passive_into_buffer(
             continue
 
         try:
-            Z = _eaf(X, encoders, cfg.STREAM_TO_ENCODER, cfg.FULL_STREAM_NAMES,
-                     batch_size=cfg.BATCH_SIZE, stream_indices=idx_full)
-            unlabeled_buffer.add(Z)
-            n_added += Z.shape[0]
+            # Store raw signals — MAE trains on raw (N, T, S, C)
+            X_sliced = X[:, :, full_stream_cols, :].astype(np.float32)
+            unlabeled_buffer.add(X_sliced)
+            n_added += X_sliced.shape[0]
             unlabeled_buffer._ingested_files.add(str(fpath))
         except Exception as e:
-            print(f"  [Passive] Feature extraction failed for {fpath.name}: {e} — skipping")
+            print(f"  [Passive] Failed for {fpath.name}: {e} — skipping")
 
     if n_added > 0:
         print(f"  [Passive] Ingested {n_added} windows from {len(new_files)} file(s)  "
@@ -198,6 +195,15 @@ def run_add_activity(new_activity, state,
                      feat_cache, np_train_raw, np_val_raw, np_test_raw,
                      label_dict, logger: RunLogger, encoders=None,
                      timestamp=None):
+    from helpers_hitl import (
+        make_binary_labels, build_gated_head_from_features,
+        train_head_fast, evaluate_head_fast,
+        find_optimal_threshold_fast, FeatureCache,
+        check_cooccurrence, retrain_head_fast,
+        NegativeBuffer, ReplayBuffer, UnlabeledBuffer,
+        evaluate_all_heads_fast, make_multilabel_binary,
+        load_heads_from_state, save_head_weights,
+    )
     if timestamp is None:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     TIMESTAMP = timestamp
@@ -238,141 +244,233 @@ def run_add_activity(new_activity, state,
     unlabeled_buffer   = state.get("unlabeled_buffer")
 
     # ── Bootstrap projector on first activity after sensor add ─────────────────
-    # Must happen BEFORE Step 1 so seed heads are 2-stream before co-occ check
-    # Bootstrap when runner signals a sensor was just added:
-    # it sets full_streams > initial_streams and sensor_incremented=False.
     _streams_expanded = (len(full_streams) > len(initial_streams))
     if _streams_expanded and not sensor_incremented:
-        print(f"\n[Sensor increment] First activity — bootstrapping projector")
         from projector import (build_projector, train_projector_bootstrap,
                                train_encoder_on_unlabeled, save_projector,
-                               retrain_old_heads_on_synthetic,
-                               generate_synthetic_embeddings)
-        from encoder import extract_all_features as _eaf
+                               train_projection_head, extract_mae_features)
 
         sensor_incremented                = True
         state["sensor_incremented"]       = True
-        # full_streams already set by runner — keep as-is
-        # initial_streams already set by runner — keep as-is
         state["pre_increment_activities"] = list(trained_activities)
-        full_streams                      = list(full_streams)   # already updated by runner
+        full_streams                      = list(full_streams)
         n_streams_out                     = len(full_streams)
-
+        n_initial                         = len(initial_streams)
         hp    = cfg.PROJECTOR_HPARAMS
         ul_hp = cfg.UNLABELED_ENCODER_HPARAMS
-        projector = build_projector(len(initial_streams),
-                                    n_streams_out, D,
-                                    hp.get("hidden_dim", 256),
-                                    latent_dim=hp.get("latent_dim", 128))  # ← add
-        idx_old = cfg.get_stream_indices(list(initial_streams))
-
-        proj_path_b = os.path.join(cfg.WORKING_DIR,
-                                   f"{TIMESTAMP}_projector_bootstrap.pt")
-
-        # ── Step B-1: Load passive unlabeled data into buffer ─────────────────
-        # Passive windows have all m+1 sensors — ingest them now so the encoder
-        # trains on the full physics of sensor interaction, not just the few
-        # windows from this first labeled activity.
-        _load_passive_into_buffer(
-            unlabeled_buffer, cfg, encoders, feat_cache, n_streams_out, D,
-            np_val_raw, TIMESTAMP
-        )
-
-        Z_passive = unlabeled_buffer.get() if unlabeled_buffer is not None else None
-
-        # Bootstrap uses raw signals directly — raw signal encoder does not
-        # need SimCLR features, it reconstructs in raw signal space
-        idx_all = list(range(n_streams_out))
-        # Slice raw val signals to all streams after increment
         full_stream_cols = [cfg.FULL_DATASET_STREAMS.index(s) for s in full_streams]
-        X_boot_full = np_val_raw[0][:, :, full_stream_cols, :]  # (N, T, S, C)
+        init_cols        = [cfg.FULL_DATASET_STREAMS.index(s) for s in initial_streams]
 
-        if Z_passive is not None and len(Z_passive) >= ul_hp["min_new_windows"]:
-            print(f"  [Bootstrap] Training encoder on {len(Z_passive)} "
-                  f"passive windows (raw MAE)")
-            projector = train_encoder_on_unlabeled(
-                projector=projector,
-                X_unlabeled=Z_passive,
-                n_streams_out=n_streams_out, embed_dim=D,
-                save_path=proj_path_b,
-                epochs=ul_hp["epochs"],
-                lr=ul_hp["learning_rate"],
-                batch_size=ul_hp["batch_size"],
-                early_stopping_patience=ul_hp["early_stopping_patience"],
-                val_fraction=ul_hp["val_fraction"],
+        if state.get("projector_from_sweep") and projector is not None \
+                and hasattr(projector, "proj_head"):
+            # ── Sweep projector available — skip MAE retraining ───────────────
+            # The sweep already trained a good MAE-2 on unlabeled data and
+            # retrained the seed heads.  Just mark sensor_incremented and
+            # rebuild feat_cache with the sweep projector's features.
+            print(f"\n[Sensor increment] Using sweep projector — skipping bootstrap MAE.")
+            Z_mae_tr_full = extract_mae_features(
+                projector, np_train_raw[0][:, :, full_stream_cols, :],
+                stream_indices=list(range(n_streams_out)),
+                batch_size=hp.get("batch_size", 256),
             )
-            if unlabeled_buffer is not None:
-                unlabeled_buffer.mark_trained()
+            Z_mae_vl_full = extract_mae_features(
+                projector, np_val_raw[0][:, :, full_stream_cols, :],
+                stream_indices=list(range(n_streams_out)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            Z_mae_te_full = extract_mae_features(
+                projector, np_test_raw[0][:, :, full_stream_cols, :],
+                stream_indices=list(range(n_streams_out)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            feat_cache = FeatureCache(Z_mae_tr_full, Z_mae_vl_full, Z_mae_te_full)
+            D = Z_mae_tr_full.shape[-1]
+            state["feature_dim"] = D
+            state["head_streams"] = {
+                (act, fusion): list(full_streams)
+                for act in trained_activities
+                if (act, fusion) in heads
+            }
+            print(f"  feat_cache rebuilt from sweep projector: {Z_mae_tr_full.shape}")
+
         else:
-            n_passive = len(Z_passive) if Z_passive is not None else 0
-            print(f"  [Bootstrap] Passive buffer too small ({n_passive} windows, "
-                  f"need {ul_hp['min_new_windows']}) — falling back to val-set bootstrap")
-            print(f"  Calibration bootstrap: {X_boot_full.shape[0]} windows "
-                  f"(all activities, labels ignored, raw signals)")
-            projector = train_projector_bootstrap(
-            projector=projector,
-            X_new_old=...,
-            X_new_full=X_boot_full,
-            n_streams_out=n_streams_out,
-            embed_dim=D,
-            save_path=proj_path_b,
-            epochs=hp.get("bootstrap_epochs", 50),
-            lr=hp.get("learning_rate", 1e-3),
-            batch_size=hp.get("batch_size", 200),
-            early_stopping_patience=hp.get("early_stopping_patience", 10),
-            simclr_encoders=encoders,        # ← add
-            stream_names=list(full_streams), # ← add
-            stream_to_encoder=cfg.STREAM_TO_ENCODER,  # ← add
-        )
+            print(f"\n[Sensor increment] First activity — bootstrapping projector")
 
-        save_projector(projector, proj_path_b)
-        state["projector"]      = projector
-        state["projector_path"] = proj_path_b
-
-        X_train_old_b = np_train_raw[0][:, :, [cfg.FULL_DATASET_STREAMS.index(s)
-                                                  for s in initial_streams], :]
-        X_val_old_b   = np_val_raw[0][:,   :, [cfg.FULL_DATASET_STREAMS.index(s)
-                                                  for s in initial_streams], :]
-        full_stream_cols_test = [cfg.FULL_DATASET_STREAMS.index(s) for s in initial_streams]
-        X_test_old_b = np_test_raw[0][:, :, full_stream_cols_test, :]
-
-        heads, thresholds, _ = retrain_old_heads_on_synthetic(
-            projector=projector, heads=heads,
-            head_streams=head_streams, full_streams=full_streams,
-            X_train_old=X_train_old_b,
-            X_val_old=X_val_old_b,
-            X_test_old=X_test_old_b,
-            Z_val_full=feat_cache.val,
-            y_train_int=np_train_raw[1], y_val_int=np_val_raw[1],
-            y_test_int=np_test_raw[1],
-            label_dict=label_dict, thresholds=thresholds,
-            fusion=fusion, n_streams_out=n_streams_out, embed_dim=D,
-            known_indices=list(range(len(initial_streams))),
-            stream_names=list(full_streams),
-            simclr_encoders=encoders,
-            stream_to_encoder=cfg.STREAM_TO_ENCODER,
-            working_dir=cfg.WORKING_DIR, timestamp=TIMESTAMP,
-            epochs=hp.get("retrain_epochs", 20),
-            lr=hp.get("learning_rate", 1e-3),
-            batch_size=hp.get("batch_size", 200),
-            focal_gamma=cfg.FOCAL_GAMMA, max_class_weight=cfg.MAX_CLASS_WEIGHT,
-            early_stopping_patience=hp.get("early_stopping_patience", 10),
-            pre_increment_activities=list(trained_activities),
-            cfg=cfg,
-        )
-
-        for act in trained_activities:
-            if (act, fusion) in heads:
-                head_streams[(act, fusion)] = list(full_streams)
-        state["head_streams"] = head_streams
-
-        # Save retrained head weights to disk so subsequent E2 runs can load them
-        for act in trained_activities:
-            if (act, fusion) in heads:
-                wpath = save_head_weights(act, fusion, heads[(act, fusion)],
-                                          cfg.WORKING_DIR, TIMESTAMP)
-                state["weights_paths"][(act, fusion)] = wpath
-        print(f"  Bootstrap done — seed heads are now 2-stream and saved to disk.")
+            hp    = cfg.PROJECTOR_HPARAMS
+            ul_hp = cfg.UNLABELED_ENCODER_HPARAMS
+            projector = build_projector(n_initial, n_streams_out, D,
+                                        hp.get("hidden_dim", 64),
+                                        proj_dim=hp.get("proj_dim", 96),
+                                        T=np_val_raw[0].shape[1],
+                                        C=np_val_raw[0].shape[3])
+    
+            proj_path_b = os.path.join(cfg.WORKING_DIR,
+                                       f"{TIMESTAMP}_projector_bootstrap.pt")
+    
+            # Load passive unlabeled data (raw signals)
+            _load_passive_into_buffer(
+                unlabeled_buffer, cfg, None, None, n_streams_out, D,
+                np_val_raw, TIMESTAMP
+            )
+            Z_passive = unlabeled_buffer.get() if unlabeled_buffer is not None else None
+    
+            full_stream_cols = [cfg.FULL_DATASET_STREAMS.index(s) for s in full_streams]
+            X_boot_full = np_val_raw[0][:, :, full_stream_cols, :]
+    
+            if Z_passive is not None and len(Z_passive) >= ul_hp["min_new_windows"]:
+                print(f"  [Bootstrap] Training encoder on {len(Z_passive)} passive windows")
+                projector = train_encoder_on_unlabeled(
+                    projector=projector, X_unlabeled=Z_passive,
+                    n_streams_out=n_streams_out, embed_dim=D,
+                    save_path=proj_path_b,
+                    epochs=ul_hp["epochs"], lr=ul_hp["learning_rate"],
+                    batch_size=ul_hp["batch_size"],
+                    early_stopping_patience=ul_hp["early_stopping_patience"],
+                    val_fraction=ul_hp["val_fraction"],
+                )
+                if unlabeled_buffer is not None:
+                    unlabeled_buffer.mark_trained()
+            else:
+                n_passive = len(Z_passive) if Z_passive is not None else 0
+                print(f"  [Bootstrap] Passive buffer too small ({n_passive} windows, "
+                      f"need {ul_hp['min_new_windows']}) — falling back to val-set bootstrap")
+                projector = train_projector_bootstrap(
+                    projector=projector, X_new_old=None, X_new_full=X_boot_full,
+                    n_streams_out=n_streams_out, embed_dim=D, save_path=proj_path_b,
+                    epochs=hp.get("bootstrap_epochs", 50),
+                    lr=hp.get("learning_rate", 1e-3),
+                    batch_size=hp.get("batch_size", 200),
+                    early_stopping_patience=hp.get("early_stopping_patience", 10),
+                )
+    
+            # Train projection head on bootstrap data
+            proj_head_path = proj_path_b.replace(".pt", "_proj.pt")
+            projector = train_projection_head(
+                projector, X_boot_full,
+                X_boot_full[:max(1, int(len(X_boot_full)*0.1))],
+                proj_head_path,
+                stream_indices=list(range(n_streams_out)),
+                epochs=hp.get("proj_epochs", 30),
+                lr=hp.get("proj_lr", 1e-3),
+                batch_size=hp.get("batch_size", 200),
+            )
+    
+            save_projector(projector, proj_path_b)
+            state["projector"]      = projector
+            state["projector_path"] = proj_path_b
+    
+            # ── Retrain old-activity heads on MAE features ─────────────────────────
+            # Old activities have only initial-stream samples.
+            # Extract MAE features with missing stream zero-padded.
+            init_cols      = [cfg.FULL_DATASET_STREAMS.index(s) for s in initial_streams]
+            cooc_graph_b   = cfg._dataset["cooccurrence_graph"]
+            Z_mae_tr_old   = extract_mae_features(
+                projector, np_train_raw[0][:, :, init_cols, :],
+                stream_indices=list(range(n_initial)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            Z_mae_vl_old   = extract_mae_features(
+                projector, np_val_raw[0][:, :, init_cols, :],
+                stream_indices=list(range(n_initial)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            Z_mae_te_old   = extract_mae_features(
+                projector, np_test_raw[0][:, :, init_cols, :],
+                stream_indices=list(range(n_initial)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            mae_D = Z_mae_tr_old.shape[-1]
+            D     = mae_D
+            state["feature_dim"] = D
+    
+            for activity_b in list(trained_activities):
+                if (activity_b, fusion) not in heads or activity_b not in label_dict:
+                    continue
+                class_idx_b = label_dict[activity_b]
+                y_tr_b = (np_train_raw[1] == class_idx_b).astype(np.int32)
+                y_vl_b = (np_val_raw[1]   == class_idx_b).astype(np.int32)
+                y_te_b = make_multilabel_binary(
+                    activity_b, np_test_raw[1], label_dict,
+                    cooccurrence_graph=cooc_graph_b)
+                n_pos_b = int(y_tr_b.sum())
+                if n_pos_b == 0 or y_vl_b.sum() == 0:
+                    continue
+                max_neg_b = min(int((y_tr_b==0).sum()), 10 * n_pos_b)
+                pos_idx_b = np.where(y_tr_b == 1)[0]
+                neg_idx_b = np.where(y_tr_b == 0)[0]
+                if len(neg_idx_b) > max_neg_b:
+                    neg_idx_b = np.random.default_rng(42).choice(
+                        neg_idx_b, size=max_neg_b, replace=False)
+                keep_b   = np.concatenate([pos_idx_b, neg_idx_b])
+                Z_tr_bal = Z_mae_tr_old[keep_b]
+                y_tr_bal = y_tr_b[keep_b]
+    
+                save_path_b = os.path.join(
+                    cfg.WORKING_DIR,
+                    f"{TIMESTAMP}_mae_head_{activity_b.replace(' ','_')}_{fusion}.pt"
+                )
+                best_model_b, best_auc_b = None, -1.0
+                for seed_b in [42, 123, 777]:
+                    torch.manual_seed(seed_b)
+                    cand_b = build_gated_head_from_features(
+                        [1.0]*n_streams_out, mae_D, fusion=fusion)
+                    cand_b = train_head_fast(
+                        cand_b, Z_tr_bal, y_tr_bal, Z_mae_vl_old, y_vl_b,
+                        save_path_b,
+                        epochs=hp.get("retrain_epochs", 20),
+                        lr=hp.get("learning_rate", 1e-3),
+                        batch_size=hp.get("batch_size", 200),
+                        focal_gamma=cfg.FOCAL_GAMMA,
+                        max_class_weight=cfg.MAX_CLASS_WEIGHT,
+                        early_stopping_patience=hp.get("early_stopping_patience", 10),
+                    )
+                    m_b = evaluate_head_fast(cand_b, Z_mae_vl_old, y_vl_b, threshold=0.5)
+                    if m_b["auc"] > best_auc_b:
+                        best_auc_b, best_model_b = m_b["auc"], cand_b
+    
+                thresh_b = find_optimal_threshold_fast(
+                    best_model_b, Z_mae_vl_old, y_vl_b,
+                    t_min=cfg.THRESHOLD_MIN, t_max=cfg.THRESHOLD_MAX,
+                    fallback=cfg.THRESHOLD_FALLBACK,
+                )
+                heads[(activity_b, fusion)]      = best_model_b
+                thresholds[(activity_b, fusion)] = thresh_b
+                head_streams[(activity_b, fusion)] = list(full_streams)
+                m_b = evaluate_head_fast(best_model_b, Z_mae_te_old, y_te_b,
+                                         threshold=thresh_b)
+                print(f"    '{activity_b}'  AUC:{m_b['auc']:.4f}  F1:{m_b['f1']:.4f}")
+    
+            state["head_streams"] = head_streams
+            # Update state heads with retrained 3-stream heads
+            state["heads"] = heads
+            state["thresholds"] = thresholds
+    
+            # Rebuild feat_cache with MAE full-stream features for new activity training
+            Z_mae_tr_full = extract_mae_features(
+                projector, np_train_raw[0][:, :, full_stream_cols, :],
+                stream_indices=list(range(n_streams_out)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            Z_mae_vl_full = extract_mae_features(
+                projector, np_val_raw[0][:, :, full_stream_cols, :],
+                stream_indices=list(range(n_streams_out)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            Z_mae_te_full = extract_mae_features(
+                projector, np_test_raw[0][:, :, full_stream_cols, :],
+                stream_indices=list(range(n_streams_out)),
+                batch_size=hp.get("batch_size", 256),
+            )
+            from helpers_hitl import FeatureCache
+            feat_cache = FeatureCache(Z_mae_tr_full, Z_mae_vl_full, Z_mae_te_full)
+    
+            # Save retrained head weights
+            for act_b in trained_activities:
+                if (act_b, fusion) in heads:
+                    wpath_b = save_head_weights(act_b, fusion, heads[(act_b, fusion)],
+                                                cfg.WORKING_DIR, TIMESTAMP)
+                    state["weights_paths"][(act_b, fusion)] = wpath_b
+            print(f"  Bootstrap done — seed heads retrained on MAE features.")
 
     # ── Step 1: Co-occurrence check ───────────────────────────────────────────
     print(f"\n[Step 1] Co-occurrence check")
@@ -408,7 +506,8 @@ def run_add_activity(new_activity, state,
     # ── Step 2b: Update encoder + retrain old heads on synthetic data ──────────
     if sensor_incremented:
         from projector import (train_projector_bootstrap, train_encoder_on_unlabeled,
-                               save_projector, retrain_old_heads_on_synthetic)
+                               save_projector, train_projection_head,
+                               extract_mae_features)
         hp    = cfg.PROJECTOR_HPARAMS
         ul_hp = cfg.UNLABELED_ENCODER_HPARAMS
         proj_path = os.path.join(cfg.WORKING_DIR,
@@ -458,34 +557,82 @@ def run_add_activity(new_activity, state,
             state["projector"]      = projector
             state["projector_path"] = proj_path
 
-            # ── Step 2b-iii: Re-impute old heads with updated encoder ─────────
-            print(f"\n[Step 2b-iii] Re-imputing old activities + retraining heads")
-            X_train_old_all = np_train_raw[0][:, :, initial_stream_cols, :]
-            X_val_old_all   = np_val_raw[0][:,   :, initial_stream_cols, :]
-
-            heads, thresholds = retrain_old_heads_on_synthetic(
-                projector=projector, heads=heads,
-                head_streams=head_streams, full_streams=full_streams,
-                X_train_old=X_train_old_all,
-                X_val_old=X_val_old_all,
-                Z_val_full=feat_cache.val,
-                y_train_int=np_train_raw[1], y_val_int=np_val_raw[1],
-                label_dict=label_dict, thresholds=thresholds,
-                fusion=fusion, n_streams_out=n_streams_out, embed_dim=D,
-                known_indices=known_indices,
-                stream_names=list(full_streams),
-                simclr_encoders=encoders,
-                stream_to_encoder=cfg.STREAM_TO_ENCODER,
-                working_dir=cfg.WORKING_DIR, timestamp=TIMESTAMP,
-                epochs=hp.get("retrain_epochs", 20),
-                lr=hp.get("learning_rate", 1e-3),
+            # Re-train projection head with updated encoder
+            proj_head_path = proj_path.replace(".pt", "_proj.pt")
+            full_stream_cols_2b = [cfg.FULL_DATASET_STREAMS.index(s)
+                                   for s in full_streams]
+            X_boot_2b = np_val_raw[0][:, :, full_stream_cols_2b, :]
+            projector = train_projection_head(
+                projector, X_boot_2b,
+                X_boot_2b[:max(1, int(len(X_boot_2b)*0.1))],
+                proj_head_path,
+                stream_indices=list(range(n_streams_out)),
+                epochs=hp.get("proj_epochs", 30),
+                lr=hp.get("proj_lr", 1e-3),
                 batch_size=hp.get("batch_size", 200),
-                focal_gamma=cfg.FOCAL_GAMMA,
-                max_class_weight=cfg.MAX_CLASS_WEIGHT,
-                early_stopping_patience=hp.get("early_stopping_patience", 10),
-                pre_increment_activities=state.get("pre_increment_activities", []),
-                cfg=cfg,
             )
+
+            # ── Step 2b-iii: Retrain old heads on updated MAE features ──────
+            print(f"\n[Step 2b-iii] Re-extracting MAE features + retraining heads")
+            Z_mae_tr_2b = extract_mae_features(
+                projector, np_train_raw[0][:, :, initial_stream_cols, :],
+                stream_indices=list(range(len(initial_streams))),
+                batch_size=hp.get("batch_size", 256),
+            )
+            Z_mae_vl_2b = extract_mae_features(
+                projector, np_val_raw[0][:, :, initial_stream_cols, :],
+                stream_indices=list(range(len(initial_streams))),
+                batch_size=hp.get("batch_size", 256),
+            )
+            mae_D_2b = Z_mae_tr_2b.shape[-1]
+
+            pre_acts_2b = set(state.get("pre_increment_activities", []))
+            for act_2b in list(pre_acts_2b):
+                if (act_2b, fusion) not in heads or act_2b not in label_dict:
+                    continue
+                class_idx_2b = label_dict[act_2b]
+                y_tr_2b = (np_train_raw[1] == class_idx_2b).astype(np.int32)
+                y_vl_2b = (np_val_raw[1]   == class_idx_2b).astype(np.int32)
+                n_pos_2b = int(y_tr_2b.sum())
+                if n_pos_2b == 0 or y_vl_2b.sum() == 0:
+                    continue
+                max_neg_2b = min(int((y_tr_2b==0).sum()), 10*n_pos_2b)
+                pos_idx_2b = np.where(y_tr_2b==1)[0]
+                neg_idx_2b = np.where(y_tr_2b==0)[0]
+                if len(neg_idx_2b) > max_neg_2b:
+                    neg_idx_2b = np.random.default_rng(42).choice(
+                        neg_idx_2b, size=max_neg_2b, replace=False)
+                keep_2b  = np.concatenate([pos_idx_2b, neg_idx_2b])
+                save_2b  = os.path.join(
+                    cfg.WORKING_DIR,
+                    f"{TIMESTAMP}_mae_head2b_{act_2b.replace(' ','_')}_{fusion}.pt"
+                )
+                best_2b, best_auc_2b = None, -1.0
+                for seed_2b in [42, 123, 777]:
+                    torch.manual_seed(seed_2b)
+                    cand_2b = build_gated_head_from_features(
+                        [1.0]*n_streams_out, mae_D_2b, fusion=fusion)
+                    cand_2b = train_head_fast(
+                        cand_2b, Z_mae_tr_2b[keep_2b], y_tr_2b[keep_2b],
+                        Z_mae_vl_2b, y_vl_2b, save_2b,
+                        epochs=hp.get("retrain_epochs", 20),
+                        lr=hp.get("learning_rate", 1e-3),
+                        batch_size=hp.get("batch_size", 200),
+                        focal_gamma=cfg.FOCAL_GAMMA,
+                        max_class_weight=cfg.MAX_CLASS_WEIGHT,
+                        early_stopping_patience=hp.get("early_stopping_patience", 10),
+                    )
+                    m_2b = evaluate_head_fast(cand_2b, Z_mae_vl_2b, y_vl_2b,
+                                              threshold=0.5)
+                    if m_2b["auc"] > best_auc_2b:
+                        best_auc_2b, best_2b = m_2b["auc"], cand_2b
+                thresh_2b = find_optimal_threshold_fast(
+                    best_2b, Z_mae_vl_2b, y_vl_2b,
+                    t_min=cfg.THRESHOLD_MIN, t_max=cfg.THRESHOLD_MAX,
+                    fallback=cfg.THRESHOLD_FALLBACK,
+                )
+                heads[(act_2b, fusion)]      = best_2b
+                thresholds[(act_2b, fusion)] = thresh_2b
 
     # ── Step 3: Pre-training OOD snapshot ─────────────────────────────────────
     print(f"\n[Step 5] Pre-training OOD evaluation")
@@ -735,32 +882,7 @@ if __name__ == "__main__":
         cfg.DATA_DIR, participant_lst=cfg.PARTICIPANTS
     )
 
-    # ── Load encoder(s) ──────────────────────────────────────────────────────
-    logger.event("INFO", "Loading encoder(s)...")
-    from encoder import load_encoders_from_cfg, extract_all_features
-    encoders = load_encoders_from_cfg(cfg)
-
-    # ── Precompute encoder features ───────────────────────────────────────────
-    logger.event("INFO", "Precomputing encoder features...")
-    _stream_indices = cfg.get_stream_indices(cfg.FULL_STREAM_NAMES)
-    Z_train = extract_all_features(np_train_raw[0], encoders,
-                                   cfg.STREAM_TO_ENCODER, cfg.FULL_STREAM_NAMES,
-                                   batch_size=cfg.BATCH_SIZE,
-                                   stream_indices=_stream_indices)
-    Z_val   = extract_all_features(np_val_raw[0],   encoders,
-                                   cfg.STREAM_TO_ENCODER, cfg.FULL_STREAM_NAMES,
-                                   batch_size=cfg.BATCH_SIZE,
-                                   stream_indices=_stream_indices)
-    Z_test  = extract_all_features(np_test_raw[0],  encoders,
-                                   cfg.STREAM_TO_ENCODER, cfg.FULL_STREAM_NAMES,
-                                   batch_size=cfg.BATCH_SIZE,
-                                   stream_indices=_stream_indices)
-    feat_cache = FeatureCache(Z_train, Z_val, Z_test)
-    D = Z_train.shape[-1]
-    logger.event("INFO",
-        f"Train: {Z_train.shape}  Val: {Z_val.shape}  Test: {Z_test.shape}"
-    )
-
+    # ── Load state ────────────────────────────────────────────────────────────
     state_path = args.state
     if state_path is None:
         import glob
@@ -775,7 +897,57 @@ if __name__ == "__main__":
         state_path = matches[-1]
         print(f"Auto-selected state: {state_path}")
 
-    state       = load_state(state_path)
+    state = load_state(state_path)
+    D     = state.get("feature_dim")
+    if D is None:
+        raise ValueError("State missing 'feature_dim' — re-run E1.")
+
+    # ── Build feat_cache from MAE features ───────────────────────────────────
+    # Use the projector stored in state to extract MAE features.
+    # If no projector yet (pre-increment), feat_cache will be rebuilt at the
+    # bootstrap step inside run_add_activity.
+    encoders   = None   # SimCLR no longer used
+    projector  = state.get("projector")
+    full_streams_m = state.get("full_streams", list(cfg.FULL_STREAM_NAMES))
+    full_cols_m    = [cfg.FULL_DATASET_STREAMS.index(s) for s in full_streams_m]
+
+    if projector is not None and hasattr(projector, "proj_head"):
+        from projector import extract_mae_features
+        print("Extracting MAE features for feat_cache...")
+        Z_train = extract_mae_features(
+            projector, np_train_raw[0][:, :, full_cols_m, :],
+            stream_indices=list(range(len(full_streams_m))),
+            batch_size=cfg.BATCH_SIZE,
+        )
+        Z_val   = extract_mae_features(
+            projector, np_val_raw[0][:, :, full_cols_m, :],
+            stream_indices=list(range(len(full_streams_m))),
+            batch_size=cfg.BATCH_SIZE,
+        )
+        Z_test  = extract_mae_features(
+            projector, np_test_raw[0][:, :, full_cols_m, :],
+            stream_indices=list(range(len(full_streams_m))),
+            batch_size=cfg.BATCH_SIZE,
+        )
+        D = Z_train.shape[-1]
+    else:
+        # Pre-increment: no projector yet — use zeros as placeholder.
+        # run_add_activity bootstrap will rebuild feat_cache with MAE features.
+        print("[WARN] No MAE projector in state — feat_cache will be rebuilt at bootstrap.")
+        n_streams_ph = len(full_streams_m)
+        proj_dim_ph  = cfg.PROJECTOR_HPARAMS.get("proj_dim", 96)
+        N_tr = len(np_train_raw[0])
+        N_vl = len(np_val_raw[0])
+        N_te = len(np_test_raw[0])
+        Z_train = np.zeros((N_tr, n_streams_ph, proj_dim_ph), dtype=np.float32)
+        Z_val   = np.zeros((N_vl, n_streams_ph, proj_dim_ph), dtype=np.float32)
+        Z_test  = np.zeros((N_te, n_streams_ph, proj_dim_ph), dtype=np.float32)
+
+    feat_cache = FeatureCache(Z_train, Z_val, Z_test)
+    state["feature_dim"] = D
+    logger.event("INFO",
+        f"feat_cache: train={Z_train.shape}  val={Z_val.shape}  test={Z_test.shape}"
+    )
 
     state, val_ood, test_ood = run_add_activity(
         new_activity=args.activity,
@@ -786,7 +958,7 @@ if __name__ == "__main__":
         np_test_raw=np_test_raw,
         label_dict=label_dict,
         logger=logger,
-        encoders=encoders,
+        encoders=None,
         timestamp=TIMESTAMP,
     )
 

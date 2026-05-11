@@ -58,7 +58,7 @@
     }
   ],
 "encoder_sweep_hparams": {
-    "epochs": 50,
+    "epochs": 100,
     "learning_rate": 1e-3,
     "batch_size": 512,
     "early_stopping_patience": 10

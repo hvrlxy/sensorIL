@@ -194,8 +194,101 @@ class CrossMaskedTransformer(nn.Module):
             X_full_c[:, :, m_idx, :] = self.forward(X_full_c, masked_stream=m_idx)
         return X_full_c
 
+    def encode_features(
+        self,
+        X: torch.Tensor,
+        stream_indices: list | None = None,
+    ) -> torch.Tensor:
+        """
+        Extract per-stream MAE embeddings without any masking.
+
+        Runs the context encoder on all available streams, averages the P
+        patch tokens per stream, and returns one vector per stream.
+
+        For streams not in stream_indices (missing at training time), the
+        output is zero-padded so the shape is always (B, S_total, d_model).
+
+        Parameters
+        ----------
+        X              : (B, T, S_in, C)  raw DC-removed signals
+        stream_indices : list[int] | None
+            Which columns of the full S_total-dim tensor these streams
+            correspond to.  If None, assumes X covers all S_total streams
+            in order.
+
+        Returns
+        -------
+        Z : (B, S_total, d_model)
+        """
+        B    = X.shape[0]
+        S_in = X.shape[2]
+        S    = self.n_streams_total
+
+        if stream_indices is None:
+            stream_indices = list(range(S_in))
+
+        # Tokenize each input stream: (B, P, d_model) each
+        patch_tokens = []
+        for local_idx in range(S_in):
+            toks = self.tokenizers[stream_indices[local_idx]](X[:, :, local_idx, :])
+            patch_tokens.append(toks)                       # (B, P, d_model)
+
+        # Stack → (B, S_in, P, d_model), add positional embeddings
+        tokens = torch.stack(patch_tokens, dim=1)           # (B, S_in, P, d_model)
+        tokens = (tokens
+                  + self.stream_emb[:, stream_indices, :, :]
+                  + self.patch_emb)
+
+        # Interleave by time → (B, P*S_in, d_model), run context encoder
+        tokens = tokens.permute(0, 2, 1, 3).reshape(B, self.P * S_in, self.d_model)
+        ctx    = self.context_encoder(tokens)                # (B, P*S_in, d_model)
+
+        # Reshape to (B, P, S_in, d_model), average patches → (B, S_in, d_model)
+        ctx    = ctx.reshape(B, self.P, S_in, self.d_model)
+        Z_in   = ctx.mean(dim=1)                             # (B, S_in, d_model)
+
+        # Zero-pad to full (B, S_total, d_model)
+        Z_out  = torch.zeros(B, S, self.d_model, device=X.device)
+        for local_idx, global_idx in enumerate(stream_indices):
+            Z_out[:, global_idx, :] = Z_in[:, local_idx, :]
+
+        return Z_out                                         # (B, S_total, d_model)
+
 
 RawSignalEncoder = CrossMaskedTransformer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STREAM PROJECTION HEAD  (B, S, d_model) -> (B, S, proj_dim)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StreamProjectionHead(nn.Module):
+    """
+    Per-stream MLP that projects MAE patch embeddings to a fixed-size
+    downstream feature space.
+
+    Trained separately after MAE reconstruction training on a
+    self-supervised objective (reconstruction of held-out patches).
+    Frozen MAE backbone, only projection head weights are updated.
+
+    Input  : (B, S, d_model)   — per-stream pooled MAE embeddings
+    Output : (B, S, proj_dim)  — projected features for binary heads
+    """
+    def __init__(self, d_model: int = 64, proj_dim: int = 96,
+                 n_streams: int = 2, dropout: float = 0.1):
+        super().__init__()
+        self.n_streams = n_streams
+        # Shared projection MLP across streams
+        self.proj = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(d_model * 2, proj_dim),
+            nn.LayerNorm(proj_dim),
+        )
+
+    def forward(self, Z: torch.Tensor) -> torch.Tensor:
+        # Z: (B, S, d_model) → (B, S, proj_dim)
+        return self.proj(Z)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,8 +296,17 @@ RawSignalEncoder = CrossMaskedTransformer
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _spectral_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    P = torch.fft.rfft(pred,   dim=1).abs()
+    """
+    Normalized spectral distribution loss — compares relative distribution
+    of energy across frequencies rather than absolute magnitudes.
+    Prevents the model from defaulting to the average training cadence
+    (e.g. walking ~1.8 Hz) regardless of input frequency.
+    Normalization is per-axis independently (dim=1 = frequency bins).
+    """
+    P = torch.fft.rfft(pred,   dim=1).abs()           # (B, F, C)
     T = torch.fft.rfft(target, dim=1).abs()
+    P = P / (P.sum(dim=1, keepdim=True) + 1e-8)       # normalize per axis
+    T = T / (T.sum(dim=1, keepdim=True) + 1e-8)
     return F.l1_loss(P, T)
 
 def _derivative_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -216,15 +318,24 @@ def _distribution_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor
 
 def reconstruction_loss(
     pred: torch.Tensor, target: torch.Tensor,
-    spectral_weight: float = 1.0, deriv_weight: float = 0.5,
-    dist_weight: float = 1.0,
+    spectral_weight:     float = 1.0,
+    deriv_weight:        float = 0.5,
+    dist_weight:         float = 1.0,
+    orientation_weight:  float = 1.0,
+    kurtosis_weight:     float = 0.0,
+    envelope_weight:     float = 0.0,
 ) -> tuple:
-    l1       = F.l1_loss(pred, target)
-    spectral = _spectral_loss(pred, target)
-    deriv    = _derivative_loss(pred, target)
-    dist     = _distribution_loss(pred, target)
-    total    = l1 + spectral_weight*spectral + deriv_weight*deriv + dist_weight*dist
-    return total, l1, spectral, deriv, dist
+    l1          = F.l1_loss(pred, target)
+    spectral    = _spectral_loss(pred, target)
+    deriv       = _derivative_loss(pred, target)
+    dist        = _distribution_loss(pred, target)
+    orientation = F.l1_loss(pred.mean(dim=1), target.mean(dim=1))
+    total       = (l1
+                   + spectral_weight    * spectral
+                   + deriv_weight       * deriv
+                   + dist_weight        * dist
+                   + orientation_weight * orientation)
+    return total, l1, spectral, deriv, dist, orientation
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,8 +348,10 @@ def train_raw_encoder(
     save_path: str,
     epochs: int = 50, lr: float = 1e-3, batch_size: int = 256,
     early_stopping_patience: int = 10,
-    spectral_weight: float = 1.0, deriv_weight: float = 0.5,
-    dist_weight: float = 1.0, **kwargs,
+    spectral_weight: float = 1.0,
+    deriv_weight:    float = 0.5,
+    dist_weight:     float = 1.0,
+    **kwargs,
 ) -> CrossMaskedTransformer:
     print(f"  [MAE] X_train={X_train.shape}  X_val={X_val.shape}", flush=True)
     S       = X_train.shape[2]
@@ -263,27 +376,38 @@ def train_raw_encoder(
 
         epoch_loss, n_batches = 0.0, 0
         for i in range(0, N, batch_size):
-            batch    = X_tr[idx[i:i+batch_size]].to(DEVICE)
-            m        = int(rng.integers(0, S))
-            batch_c  = batch - batch.mean(dim=1, keepdim=True)
-            target_c = batch_c[:, :, m, :]
-            pred_c   = encoder(batch_c, masked_stream=m)
+            batch  = X_tr[idx[i:i+batch_size]].to(DEVICE)
+            m      = int(rng.integers(0, S))
+            target = batch[:, :, m, :]
+            pred   = encoder(batch, masked_stream=m)
 
             with torch.no_grad():
-                win_var = target_c.var(dim=1).mean(dim=-1)
-                w       = win_var / (win_var.mean() + 1e-8)
-                w       = w.clamp(0.2, 5.0)
-                w       = w / w.mean()
+                win_var  = target.var(dim=1).mean(dim=-1)          # (B,)
+                var_med  = win_var.median()
+                high     = win_var >= var_med                       # top 50%
+                low      = ~high                                    # bottom 50%
 
-            per_sample_l1 = (pred_c - target_c).abs().mean(dim=(1, 2))
-            l1_weighted   = (per_sample_l1 * w).mean()
-            _, _, spec, deriv, dist = reconstruction_loss(
-                pred_c, target_c,
-                spectral_weight=spectral_weight,
-                deriv_weight=deriv_weight,
-                dist_weight=dist_weight,
-            )
-            loss = l1_weighted + spectral_weight*spec + deriv_weight*deriv + dist_weight*dist
+            def _batch_loss(mask):
+                if mask.sum() == 0:
+                    return pred.sum() * 0.0
+                p, t = pred[mask], target[mask]
+                l1_m = F.l1_loss(p, t)
+                _, _, spec, deriv, dist, orient = reconstruction_loss(
+                    p, t,
+                    spectral_weight=spectral_weight,
+                    deriv_weight=deriv_weight,
+                    dist_weight=dist_weight,
+                )
+                return (l1_m
+                        + spectral_weight * spec
+                        + deriv_weight    * deriv
+                        + dist_weight     * dist
+                        + orient)
+
+            # Fixed 50/50 split — high-variance windows always contribute
+            # equally regardless of their proportion in the batch.
+            # Prevents sedentary majority from diluting cycling signal.
+            loss = 0.5 * _batch_loss(high) + 0.5 * _batch_loss(low)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
@@ -299,14 +423,14 @@ def train_raw_encoder(
         with torch.no_grad():
             for i in range(0, len(X_vl), batch_size):
                 b      = X_vl[i:i+batch_size].to(DEVICE)
-                b_c    = b - b.mean(dim=1, keepdim=True)
-                tgt_c  = b_c[:, :, pm, :]
-                pred_c = encoder(b_c, masked_stream=pm)
-                v, *_  = reconstruction_loss(pred_c, tgt_c,
+                tgt    = b[:, :, pm, :]
+                pred   = encoder(b, masked_stream=pm)
+                v, *_  = reconstruction_loss(pred, tgt,
                     spectral_weight=spectral_weight,
                     deriv_weight=deriv_weight,
                     dist_weight=dist_weight)
                 val_loss += v.item()
+                n_val    += 1
                 n_val    += 1
         val_loss /= max(1, n_val)
 
@@ -330,25 +454,6 @@ def train_raw_encoder(
     if best_ckpt is not None:
         encoder.load_state_dict(best_ckpt)
 
-    # ── Amplitude calibration ─────────────────────────────────────────────────
-    encoder.eval()
-    arr = X_train[:min(10_000, len(X_train))]
-    win_var   = arr.std(axis=(1, 2, 3))
-    threshold = float(np.percentile(win_var, 50))
-    arr_high  = arr[win_var > threshold]
-    n_high    = len(arr_high)
-
-    stream_std_ratios = {}
-    for s in range(S):
-        ks  = [i for i in range(S) if i != s]
-        tgt = arr_high[:, :, s,  :].std(axis=(1, 2))
-        kno = arr_high[:, :, ks, :].std(axis=(1, 2, 3))
-        stream_std_ratios[s] = float(np.median(tgt / (kno + 1e-6)))
-
-    encoder.stream_std_ratios = stream_std_ratios
-    print(f"  [MAE] stream_std_ratios (top-50%, n={n_high}): "
-          f"{[f's{k}:{v:.3f}' for k, v in stream_std_ratios.items()]}")
-
     torch.save(_checkpoint(encoder), save_path)
     return encoder
 
@@ -366,7 +471,6 @@ def impute_missing_streams(
     batch_size: int = 256, n_samples: int = 1,
 ) -> np.ndarray:
     encoder.eval()
-    std_ratios      = getattr(encoder, "stream_std_ratios", {})
     missing_indices = [j for j in range(n_streams_total) if j not in known_indices]
     results = []
 
@@ -375,23 +479,10 @@ def impute_missing_streams(
             bk = torch.from_numpy(
                 X_known[i:i+batch_size].astype(np.float32)
             ).to(DEVICE)
-            bk_mean = bk.mean(dim=1, keepdim=True)
-            bk_c    = bk - bk_mean
-            X_full_c = encoder.impute(bk_c, known_indices, missing_indices)
 
-            # Add DC back using known stream mean as proxy
-            dc = bk_mean.mean(dim=2, keepdim=True)   # (B, 1, 1, C)
-            for m_idx in missing_indices:
-                X_full_c[:, :, m_idx, :] = X_full_c[:, :, m_idx, :] + dc.squeeze(2)
-
-            # Amplitude correction
-            known_energy = bk.std(dim=1).mean(dim=(1, 2), keepdim=True)  # (B,1,1)
-            for m_idx in missing_indices:
-                ratio    = std_ratios.get(m_idx, 1.0)
-                pred     = X_full_c[:, :, m_idx, :]
-                pred_std = pred.std(dim=1, keepdim=True).clamp(min=1e-6)
-                scale    = (known_energy * ratio / pred_std).clamp(0.3, 3.0)
-                X_full_c[:, :, m_idx, :] = pred * scale
+            # Feed raw absolute signals — no DC removal.
+            # MAE trained on absolute signals can infer target DC from known streams.
+            X_full_c = encoder.impute(bk, known_indices, missing_indices)
 
             for out_pos, src_pos in enumerate(known_indices):
                 X_full_c[:, :, src_pos, :] = bk[:, :, out_pos, :]
@@ -435,144 +526,16 @@ def diagnose_imputation_quality(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SYNTHETIC FEATURE GENERATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-def generate_synthetic_embeddings(
-    encoder, X_old_raw, known_indices, n_streams_total,
-    simclr_encoders, stream_names, stream_to_encoder,
-    embed_dim=96, batch_size=256, T=100, C=3,
-):
-    from encoder import extract_all_features
-    X_full = impute_missing_streams(encoder, X_old_raw, known_indices,
-                                    n_streams_total, T, C, batch_size)
-    return extract_all_features(X_full, simclr_encoders, stream_to_encoder,
-                                stream_names, batch_size=batch_size,
-                                stream_indices=list(range(n_streams_total)))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HEAD RETRAINING
-# ─────────────────────────────────────────────────────────────────────────────
-
-def retrain_old_heads_on_synthetic(
-    projector, heads, head_streams, full_streams,
-    X_train_old, X_val_old, X_test_old,
-    Z_val_full,
-    y_train_int, y_val_int, y_test_int,
-    label_dict, thresholds, fusion,
-    n_streams_out, embed_dim, known_indices, stream_names,
-    simclr_encoders, stream_to_encoder,
-    working_dir, timestamp,
-    pre_increment_activities=None,
-    epochs=20, lr=1e-3, batch_size=200,
-    focal_gamma=2.0, max_class_weight=10.0,
-    early_stopping_patience=10,
-    cfg=None, T=100, C=3,
-):
-    """Retrain pre-increment heads on imputed synthetic embeddings.
-    Returns (updated_heads, updated_thresholds, Z_test_synth)."""
-    from helpers_hitl import (build_gated_head_from_features, train_head_fast,
-                               find_optimal_threshold_fast, evaluate_head_fast)
-
-    print(f"\n  [Synthetic retrain] Generating synthetic embeddings (train/val/test)...")
-    kw = dict(known_indices=known_indices, n_streams_total=n_streams_out,
-              simclr_encoders=simclr_encoders, stream_names=stream_names,
-              stream_to_encoder=stream_to_encoder, embed_dim=embed_dim,
-              batch_size=batch_size, T=T, C=C)
-    Z_train_synth = generate_synthetic_embeddings(projector, X_train_old, **kw)
-    Z_val_synth   = generate_synthetic_embeddings(projector, X_val_old,   **kw)
-    Z_test_synth  = generate_synthetic_embeddings(projector, X_test_old,  **kw)
-    print(f"  [Synthetic retrain] Train:{Z_train_synth.shape} "
-          f"Val:{Z_val_synth.shape} Test:{Z_test_synth.shape}")
-
-    _si        = n_streams_out - 1
-    Z_rn, Z_sn = Z_val_full[:, _si, :], Z_val_synth[:, _si, :]
-    ns  = np.linalg.norm(Z_sn, axis=-1, keepdims=True).clip(min=1e-8)
-    nr  = np.linalg.norm(Z_rn, axis=-1, keepdims=True).clip(min=1e-8)
-    cos = float(np.mean(np.sum((Z_sn/ns)*(Z_rn/nr), axis=-1)))
-    print(f"  [Imputation diag] synth_var={np.var(Z_sn):.3f}  "
-          f"real_var={np.var(Z_rn):.3f}  cosine={cos:.3f}  "
-          f"({'good' if cos > 0.5 and np.var(Z_sn) > np.var(Z_rn)*0.1 else 'POOR'})")
-
-    updated_heads      = dict(heads)
-    updated_thresholds = dict(thresholds)
-    pre_increment      = set(pre_increment_activities or [])
-    print(f"  [Synthetic retrain] pre_increment={sorted(pre_increment)}")
-
-    for (activity, f), model in heads.items():
-        if f != fusion or activity not in label_dict:
-            continue
-        h_streams = head_streams.get((activity, f), full_streams)
-        is_old    = (activity in pre_increment) or (len(h_streams) < len(full_streams))
-        print(f"  [Synthetic retrain] '{activity}': is_old={is_old}")
-        if not is_old:
-            continue
-
-        class_idx = label_dict[activity]
-        y_tr_bin  = (y_train_int == class_idx).astype(np.int32)
-        y_vl_bin  = (y_val_int   == class_idx).astype(np.int32)
-        y_te_bin  = (y_test_int  == class_idx).astype(np.int32)
-        n_pos = int(y_tr_bin.sum())
-        if n_pos == 0 or y_vl_bin.sum() == 0:
-            continue
-
-        max_neg  = min(int((y_tr_bin == 0).sum()), 10 * n_pos)
-        pos_idx  = np.where(y_tr_bin == 1)[0]
-        neg_idx  = np.where(y_tr_bin == 0)[0]
-        if len(neg_idx) > max_neg:
-            neg_idx = np.random.default_rng(42).choice(neg_idx, size=max_neg, replace=False)
-        keep_idx = np.concatenate([pos_idx, neg_idx])
-        Z_tr_bal = Z_train_synth[keep_idx]
-        y_tr_bal = y_tr_bin[keep_idx]
-        print(f"  [Synthetic retrain] '{activity}' "
-              f"pos:{n_pos} neg:{len(neg_idx)} ratio:{len(neg_idx)/max(n_pos,1):.1f}:1")
-
-        Z_pos = Z_train_synth[y_tr_bin == 1]
-        Z_neg = Z_train_synth[y_tr_bin == 0]
-        if len(Z_pos) > 0 and len(Z_neg) > 0:
-            pn  = float(np.linalg.norm(Z_pos.reshape(len(Z_pos),-1), axis=1).mean())
-            nn_ = float(np.linalg.norm(Z_neg.reshape(len(Z_neg),-1), axis=1).mean())
-            cs  = float(np.mean([
-                np.dot(Z_pos[i].flatten(), Z_neg[i%len(Z_neg)].flatten()) /
-                (np.linalg.norm(Z_pos[i]) * np.linalg.norm(Z_neg[i%len(Z_neg)]) + 1e-8)
-                for i in range(min(100, len(Z_pos)))]))
-            print(f"    [Diag] pos_norm={pn:.3f}  neg_norm={nn_:.3f}  cosine={cs:.3f}")
-
-        safe      = activity.replace(" ", "_")
-        save_path = os.path.join(working_dir, f"{timestamp}_synth_retrain_{safe}.pt")
-        best_model, best_auc = None, -1.0
-        for seed in [42, 123, 777]:
-            torch.manual_seed(seed)
-            cand = build_gated_head_from_features([1.0]*n_streams_out, embed_dim, fusion=fusion)
-            cand = train_head_fast(cand, Z_tr_bal, y_tr_bal, Z_val_synth, y_vl_bin,
-                                   save_path, epochs=epochs, lr=lr, batch_size=batch_size,
-                                   focal_gamma=focal_gamma, max_class_weight=max_class_weight,
-                                   early_stopping_patience=early_stopping_patience)
-            m = evaluate_head_fast(cand, Z_val_synth, y_vl_bin, threshold=0.5)
-            if m["auc"] > best_auc:
-                best_auc, best_model = m["auc"], cand
-
-        t_min    = cfg.THRESHOLD_MIN      if cfg else 0.20
-        t_max    = cfg.THRESHOLD_MAX      if cfg else 0.80
-        fallback = cfg.THRESHOLD_FALLBACK if cfg else 0.50
-        thresh   = find_optimal_threshold_fast(best_model, Z_val_synth, y_vl_bin,
-                                               t_min=t_min, t_max=t_max, fallback=fallback)
-        updated_heads[(activity, f)]      = best_model
-        updated_thresholds[(activity, f)] = thresh
-        m = evaluate_head_fast(best_model, Z_test_synth, y_te_bin, threshold=thresh)
-        print(f"    AUC:{m['auc']:.4f}  F1:{m['f1']:.4f}  thresh:{thresh:.3f}  [synthetic]")
-
-    return updated_heads, updated_thresholds, Z_test_synth
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # SAVE / LOAD / BUILD
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _checkpoint(encoder: CrossMaskedTransformer) -> dict:
+    # Save backbone and proj_head separately so load_state_dict is clean
+    full_sd = encoder.state_dict()
+    backbone_sd = {k: v for k, v in full_sd.items()
+                   if not k.startswith("proj_head.")}
     return {
-        "state_dict":        encoder.state_dict(),
+        "state_dict":        backbone_sd,
         "n_streams_total":   encoder.n_streams_total,
         "T":                 encoder.T,
         "C":                 encoder.C,
@@ -580,6 +543,9 @@ def _checkpoint(encoder: CrossMaskedTransformer) -> dict:
         "d_model":           encoder.d_model,
         "n_heads":           encoder.n_heads,
         "n_layers":          encoder.n_layers,
+        "proj_dim":          getattr(encoder, "proj_dim", None),
+        "proj_head_state":   (encoder.proj_head.state_dict()
+                              if hasattr(encoder, "proj_head") else None),
         "stream_std_ratios": getattr(encoder, "stream_std_ratios", {}),
         "model_type":        "cross_masked_transformer_patch",
     }
@@ -589,7 +555,10 @@ def save_projector(encoder: CrossMaskedTransformer, path: str):
 
 def load_projector(path: str, **kwargs) -> CrossMaskedTransformer:
     ckpt = torch.load(path, map_location="cpu")
-    enc  = CrossMaskedTransformer(
+    proj_dim        = ckpt.get("proj_dim")
+    proj_head_state = ckpt.get("proj_head_state")
+
+    enc = CrossMaskedTransformer(
         n_streams_total=ckpt["n_streams_total"],
         T=ckpt["T"], C=ckpt["C"],
         patch_size=ckpt.get("patch_size", 10),
@@ -597,14 +566,30 @@ def load_projector(path: str, **kwargs) -> CrossMaskedTransformer:
         n_heads=ckpt.get("n_heads", 4),
         n_layers=ckpt.get("n_layers", 3),
     )
-    enc.load_state_dict(ckpt["state_dict"])
+
+    # Build proj_head before loading state_dict so all keys are present
+    if proj_dim is not None:
+        enc.proj_dim  = proj_dim
+        enc.proj_head = StreamProjectionHead(
+            d_model=enc.d_model, proj_dim=proj_dim,
+            n_streams=enc.n_streams_total,
+        )
+
+    enc.load_state_dict(ckpt["state_dict"], strict=False)
     enc.stream_std_ratios = ckpt.get("stream_std_ratios", {})
+
+    # Load proj_head weights if saved separately (older checkpoints)
+    if proj_head_state is not None and hasattr(enc, "proj_head"):
+        enc.proj_head.load_state_dict(proj_head_state)
+
     return enc.to(DEVICE)
 
 def build_projector(
     n_streams_in: int, n_streams_out: int, embed_dim: int,
     hidden_dim: int = 64, T: int = 100, C: int = 3,
-    patch_size: int = 10, dropout: float = 0.1, **kwargs,
+    patch_size: int = 10, dropout: float = 0.1,
+    proj_dim: int = 96,   # output dim of projection head (matches SimCLR embed_dim)
+    **kwargs,
 ) -> CrossMaskedTransformer:
     assert n_streams_out > n_streams_in
     assert T % patch_size == 0
@@ -612,11 +597,192 @@ def build_projector(
     n_heads = 4
     while n_heads > 1 and d_model % n_heads != 0:
         n_heads -= 1
-    return CrossMaskedTransformer(
+    enc = CrossMaskedTransformer(
         n_streams_total=n_streams_out, T=T, C=C,
         patch_size=patch_size, d_model=d_model,
         n_heads=n_heads, n_layers=3, dropout=dropout,
     ).to(DEVICE)
+    enc.proj_dim  = proj_dim
+    enc.proj_head = StreamProjectionHead(
+        d_model=d_model, proj_dim=proj_dim,
+        n_streams=n_streams_out, dropout=dropout,
+    ).to(DEVICE)
+    return enc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROJECTION HEAD TRAINING  (cross-stream prediction, separate from MAE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def train_projection_head(
+    encoder: CrossMaskedTransformer,
+    X_train: np.ndarray,
+    X_val:   np.ndarray,
+    save_path: str,
+    stream_indices: list | None = None,
+    epochs: int   = 30,
+    lr:     float = 1e-3,
+    batch_size: int = 256,
+    early_stopping_patience: int = 10,
+    **kwargs,
+) -> CrossMaskedTransformer:
+    """
+    Train the projection head on top of a frozen MAE backbone.
+
+    Objective: given known streams, predict the masked stream's MAE embedding.
+    Self-supervised — no labels needed.  Backbone frozen, only proj_head updated.
+
+    X_train, X_val : (N, T, S, C) raw signals — all streams present.
+    """
+    if not hasattr(encoder, "proj_head"):
+        raise RuntimeError("encoder has no proj_head — call build_projector with proj_dim")
+
+    print(f"  [ProjHead] Training projection head  "
+          f"X_train={X_train.shape}  X_val={X_val.shape}", flush=True)
+
+    # Freeze MAE backbone
+    for p in encoder.parameters():
+        p.requires_grad = False
+    for p in encoder.proj_head.parameters():
+        p.requires_grad = True
+
+    encoder  = encoder.to(DEVICE)
+    opt      = torch.optim.Adam(encoder.proj_head.parameters(), lr=lr)
+    sched    = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs,
+                                                           eta_min=lr * 0.05)
+    X_tr     = torch.from_numpy(X_train.astype(np.float32))
+    X_vl     = torch.from_numpy(X_val.astype(np.float32))
+    N        = len(X_tr)
+    S        = X_train.shape[2]
+    if stream_indices is None:
+        stream_indices = list(range(S))
+
+    best_val, best_ckpt, patience_count = float("inf"), None, 0
+    rng = np.random.default_rng(42)
+
+    for epoch in range(1, epochs + 1):
+        encoder.proj_head.train()
+        idx        = torch.randperm(N)
+        epoch_loss = 0.0
+        n_batches  = 0
+
+        for i in range(0, N, batch_size):
+            batch    = X_tr[idx[i:i+batch_size]].to(DEVICE)
+
+            m_local  = int(rng.integers(0, S))
+            m_global = stream_indices[m_local]
+            known_local  = [s for s in range(S) if s != m_local]
+            known_global = [stream_indices[s] for s in known_local]
+
+            with torch.no_grad():
+                Z_all    = encoder.encode_features(batch, stream_indices)
+                Z_target = encoder.proj_head(Z_all)[:, m_global, :]
+
+                X_known  = batch[:, :, known_local, :]
+                Z_known  = encoder.encode_features(X_known, known_global)
+
+            Z_pred = encoder.proj_head(Z_known)[:, m_global, :]
+
+            loss = F.mse_loss(Z_pred, Z_target)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            epoch_loss += loss.item()
+            n_batches  += 1
+
+        sched.step()
+
+        # Validation
+        encoder.proj_head.eval()
+        val_loss, n_val = 0.0, 0
+        pm_local  = S - 1
+        pm_global = stream_indices[pm_local]
+        kl = list(range(S - 1))
+        kg = [stream_indices[s] for s in kl]
+        with torch.no_grad():
+            for i in range(0, len(X_vl), batch_size):
+                b     = X_vl[i:i+batch_size].to(DEVICE)
+                Z_all = encoder.encode_features(b, stream_indices)
+                Z_tgt = encoder.proj_head(Z_all)[:, pm_global, :]
+                X_kn  = b[:, :, kl, :]
+                Z_kn  = encoder.encode_features(X_kn, kg)
+                Z_pr  = encoder.proj_head(Z_kn)[:, pm_global, :]
+                val_loss += F.mse_loss(Z_pr, Z_tgt).item()
+                n_val    += 1
+        val_loss /= max(1, n_val)
+
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"  [ProjHead] epoch={epoch:3d}  "
+                  f"train={epoch_loss/max(1,n_batches):.5f}  val={val_loss:.5f}",
+                  flush=True)
+
+        if val_loss < best_val:
+            best_val       = val_loss
+            best_ckpt      = {k: v.cpu().clone()
+                              for k, v in encoder.proj_head.state_dict().items()}
+            patience_count = 0
+        else:
+            patience_count += 1
+            if patience_count >= early_stopping_patience:
+                print(f"  [ProjHead] Early stop epoch {epoch}  best_val={best_val:.6f}")
+                break
+
+    if best_ckpt is not None:
+        encoder.proj_head.load_state_dict(best_ckpt)
+
+    for p in encoder.parameters():
+        p.requires_grad = True
+
+    torch.save(_checkpoint(encoder), save_path)
+    print(f"  [ProjHead] Done  best_val={best_val:.6f}")
+    return encoder
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAE FEATURE EXTRACTION  (replaces SimCLR for downstream tasks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_mae_features(
+    encoder: CrossMaskedTransformer,
+    X_raw: np.ndarray,
+    stream_indices: list | None = None,
+    batch_size: int = 256,
+) -> np.ndarray:
+    """
+    Extract MAE projection head features from raw signals.
+
+    Parameters
+    ----------
+    encoder        : CrossMaskedTransformer with proj_head trained
+    X_raw          : (N, T, S_in, C)  raw signals (any subset of streams)
+    stream_indices : positions of X_raw streams in the full S_total tensor.
+                     If None, assumes streams 0..S_in-1.
+
+    Returns
+    -------
+    Z : (N, S_total, proj_dim)  — same shape contract as SimCLR embeddings
+        Missing streams are zero-padded.
+    """
+    if not hasattr(encoder, "proj_head"):
+        raise RuntimeError("encoder has no proj_head — train projection head first")
+
+    encoder.eval()
+    encoder.proj_head.eval()
+    S_in = X_raw.shape[2]
+    if stream_indices is None:
+        stream_indices = list(range(S_in))
+
+    results = []
+    with torch.no_grad():
+        for i in range(0, len(X_raw), batch_size):
+            batch  = torch.from_numpy(
+                X_raw[i:i+batch_size].astype(np.float32)
+            ).to(DEVICE)
+            Z_mae  = encoder.encode_features(batch, stream_indices)
+            Z_proj = encoder.proj_head(Z_mae)
+            results.append(Z_proj.cpu().numpy())
+
+    return np.concatenate(results, axis=0).astype(np.float32)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,7 +792,7 @@ def build_projector(
 def train_encoder_on_unlabeled(
     projector, X_unlabeled, n_streams_out, embed_dim, save_path,
     epochs=50, lr=1e-3, batch_size=256, early_stopping_patience=10,
-    val_fraction=0.1, Z_val_external=None,
+    val_fraction=0.1, Z_val_external=None, **kwargs,
 ):
     if Z_val_external is not None:
         X_tr, X_vl = X_unlabeled, Z_val_external
@@ -638,7 +804,9 @@ def train_encoder_on_unlabeled(
                              epochs=epochs, lr=lr, batch_size=batch_size,
                              early_stopping_patience=early_stopping_patience)
 
+
 def measure_encoder_val_loss(encoder, X_val, batch_size=256):
+    """Reconstruction loss on the primary missing scenario (last stream)."""
     encoder.eval()
     S   = X_val.shape[2]
     pm  = S - 1
@@ -647,18 +815,18 @@ def measure_encoder_val_loss(encoder, X_val, batch_size=256):
     with torch.no_grad():
         for i in range(0, len(X_t), batch_size):
             b      = X_t[i:i+batch_size].to(DEVICE)
-            b_c    = b - b.mean(dim=1, keepdim=True)
-            tgt_c  = b_c[:, :, pm, :]
-            pred_c = encoder(b_c, masked_stream=pm)
-            v, *_  = reconstruction_loss(pred_c, tgt_c)
+            tgt    = b[:, :, pm, :]
+            pred   = encoder(b, masked_stream=pm)
+            v, *_  = reconstruction_loss(pred, tgt)
             total += v.item(); n += 1
     return total / max(1, n)
 
+
 def train_projector_bootstrap(
     projector, X_new_old, X_new_full, n_streams_out, embed_dim, save_path,
-    epochs=20, lr=1e-3, batch_size=200, early_stopping_patience=10,
-    simclr_encoders=None, stream_names=None, stream_to_encoder=None, **kwargs,
+    epochs=20, lr=1e-3, batch_size=200, early_stopping_patience=10, **kwargs,
 ):
+    """Bootstrap MAE on labeled val-set windows at sensor-increment time."""
     n_val = max(1, int(len(X_new_full) * 0.1))
     X_tr  = X_new_full[n_val:]
     X_vl  = X_new_full[:n_val]
@@ -666,24 +834,48 @@ def train_projector_bootstrap(
                              epochs=epochs, lr=lr, batch_size=batch_size,
                              early_stopping_patience=early_stopping_patience)
 
+
 def evaluate_with_missing_sensors(
     heads, thresholds, projector, X_test_raw, Z_test_full,
     y_int, label_dict, fusion, missing_sensors, all_stream_names,
-    n_streams_out, embed_dim, simclr_encoders, stream_to_encoder,
+    n_streams_out, embed_dim=None, simclr_encoders=None, stream_to_encoder=None,
     cooccurrence_graph=None, T=100, C=3, batch_size=256,
 ):
+    """
+    Evaluate heads when some sensors are missing at test time.
+    Imputes missing streams, then extracts MAE features — no SimCLR.
+    """
     from helpers_hitl import evaluate_all_heads_fast
-    mi  = [all_stream_names.index(s) for s in missing_sensors if s in all_stream_names]
-    ki  = [i for i in range(n_streams_out) if i not in mi]
-    X_k = X_test_raw[:, :, ki, :]
-    Z   = generate_synthetic_embeddings(projector, X_k, ki, n_streams_out,
-                                        simclr_encoders, all_stream_names,
-                                        stream_to_encoder, embed_dim, batch_size, T, C)
+    mi = [all_stream_names.index(s) for s in missing_sensors
+          if s in all_stream_names]
+    ki = [i for i in range(n_streams_out) if i not in mi]
+
+    # Impute missing streams → full raw signal
+    X_k    = X_test_raw[:, :, ki, :]
+    X_full = impute_missing_streams(projector, X_k, ki, n_streams_out,
+                                    T, C, batch_size)
+    # Extract MAE features from imputed full signal
+    Z = extract_mae_features(projector, X_full,
+                             stream_indices=list(range(n_streams_out)),
+                             batch_size=batch_size)
     return evaluate_all_heads_fast(heads, Z, y_int, label_dict, thresholds, fusion,
                                    cooccurrence_graph=cooccurrence_graph)
 
-def generate_synthetic_full(projector, Z_old, n_streams_out, embed_dim, **kwargs):
+
+def retrain_old_heads_on_synthetic(*args, **kwargs):
     raise NotImplementedError(
-        "generate_synthetic_full() is no longer supported. "
-        "Use generate_synthetic_embeddings() with raw signals instead."
+        "retrain_old_heads_on_synthetic() is no longer used. "
+        "Old-activity heads are retrained directly on MAE features "
+        "in experiment_runner.py."
     )
+
+
+def generate_synthetic_embeddings(*args, **kwargs):
+    raise NotImplementedError(
+        "generate_synthetic_embeddings() is no longer used. "
+        "Use extract_mae_features() instead."
+    )
+
+
+def generate_synthetic_full(*args, **kwargs):
+    raise NotImplementedError("generate_synthetic_full() is no longer supported.")

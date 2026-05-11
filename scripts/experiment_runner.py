@@ -85,9 +85,9 @@ from helpers_hitl import (
 from encoder import load_encoders_from_cfg, extract_all_features
 from projector import (
     build_projector, load_projector, save_projector,
-    train_encoder_on_unlabeled, retrain_old_heads_on_synthetic,
-    measure_encoder_val_loss, evaluate_with_missing_sensors,
-    generate_synthetic_embeddings,
+    train_encoder_on_unlabeled, measure_encoder_val_loss,
+    evaluate_with_missing_sensors,
+    train_projection_head, extract_mae_features,
 )
 from E2_add_activity import run_add_activity, save_state
 
@@ -260,12 +260,32 @@ def run_encoder_fraction_sweep(
 
     hp  = cfg.PROJECTOR_HPARAMS
     rng = np.random.default_rng(cfg.SEED)
-    X_unlabeled_shuffled = X_unlabeled_train[rng.permutation(N_total)]
+
+    # Variance-stratified subsampling — maintain fixed proportion of
+    # high-variance (active) windows regardless of fraction size.
+    # Prevents cycling/dynamic signals from being diluted as data grows.
+    win_var    = X_unlabeled_train.var(axis=(1, 2, 3))          # (N,)
+    var_thresh = float(np.percentile(win_var, 50))              # median split
+    high_idx   = np.where(win_var >= var_thresh)[0]
+    low_idx    = np.where(win_var <  var_thresh)[0]
+    high_idx   = rng.permutation(high_idx)
+    low_idx    = rng.permutation(low_idx)
+    # Target: 40% high-variance, 60% low-variance in every fraction
+    HIGH_RATIO = 0.40
 
     for frac in fractions:
         n_use    = max(1, int(N_total * frac))
-        X_frac   = X_unlabeled_shuffled[:n_use]
+        n_high   = min(int(n_use * HIGH_RATIO), len(high_idx))
+        n_low    = min(n_use - n_high, len(low_idx))
+        X_frac   = np.concatenate([
+            X_unlabeled_train[high_idx[:n_high]],
+            X_unlabeled_train[low_idx[:n_low]],
+        ], axis=0)
+        # Shuffle so high/low aren't all at start of array
+        X_frac   = X_frac[rng.permutation(len(X_frac))]
         frac_pct = f"{frac:.0%}"
+        print(f"  [{frac_pct}] n={len(X_frac)}  high_var={n_high}({n_high/len(X_frac):.0%})  "
+              f"low_var={n_low}({n_low/len(X_frac):.0%})")
 
         projector = build_projector(
                 n_streams_in  = n_initial,
@@ -298,56 +318,174 @@ def run_encoder_fraction_sweep(
             Z_val_external  = X_unlabeled_val,
         )
 
-        enc_val_loss = _measure_encoder_val_loss(projector, X_unlabeled_val)
-
-        # ── Re-impute old heads ──────────────────────────────────────────────
-        print(f"  Re-imputing pre-increment heads ({len(pre_increment)} activities)...")
-        sweep_heads, sweep_thresholds, Z_test_synth_old = retrain_old_heads_on_synthetic(
-            projector        = projector,
-            heads            = heads,
-            head_streams     = head_streams,
-            full_streams     = list(full_streams),
-            X_train_old      = X_train_old,
-            X_val_old        = X_val_old,
-            X_test_old       = X_test_old,
-            Z_val_full       = Z_val_full,
-            y_train_int      = np_train_raw[1],
-            y_val_int        = np_val_raw[1],
-            y_test_int       = np_test_raw[1],
-            label_dict       = label_dict,
-            thresholds       = thresholds,
-            fusion           = fusion,
-            n_streams_out    = n_streams_out,
-            embed_dim        = embed_dim,
-            known_indices    = known_indices,
-            stream_names     = streams_after,
-            simclr_encoders  = encoders,
-            stream_to_encoder= cfg.STREAM_TO_ENCODER,
-            working_dir      = working_dir,
-            timestamp        = f"{timestamp}_sweep_{frac_pct}",
-            pre_increment_activities = list(pre_increment),
-            cfg              = cfg,
-            T=T, C=C,
+        # ── Train projection head on unlabeled data ──────────────────────────
+        # Frozen MAE backbone + trainable projection head.
+        # The projection head maps MAE patch embeddings to a fixed-size
+        # feature space used by the binary heads — replacing SimCLR.
+        proj_ckpt_path = ckpt_path.replace(".pt", "_proj.pt")
+        projector = train_projection_head(
+            encoder    = projector,
+            X_train    = X_frac,
+            X_val      = X_unlabeled_val,
+            save_path  = proj_ckpt_path,
+            stream_indices = list(range(n_streams_out)),
+            epochs     = sweep_hparams.get("proj_epochs", 30),
+            lr         = sweep_hparams.get("proj_lr", 1e-3),
+            batch_size = sweep_hparams.get("batch_size", 256),
+            early_stopping_patience = sweep_hparams.get("early_stopping_patience", 10),
         )
 
-        # ── Full-sensor evaluation ────────────────────────────────────────────
-        # Old-act heads evaluated on synthetic test (realistic)
-        # New-act heads evaluated on real test (they were trained on real data)
+        # ── Extract MAE features for labeled data ────────────────────────────
+        # Use MAE projection head features instead of SimCLR.
+        # Old activities: only initial streams available → zero-pad new streams.
+        # New activities: all streams available → full MAE features.
+        after_cols  = [cfg.FULL_DATASET_STREAMS.index(s) for s in streams_after]
+        before_cols = [cfg.FULL_DATASET_STREAMS.index(s) for s in streams_before]
+        n_before    = len(streams_before)
+
+        print(f"  Extracting MAE features (all labeled data)...")
+        # Full streams — for new activities and evaluation
+        Z_mae_train_full = extract_mae_features(
+            projector, np_train_raw[0][:, :, after_cols, :],
+            stream_indices=list(range(n_streams_out)),
+            batch_size=sweep_hparams.get("batch_size", 256),
+        )
+        Z_mae_val_full   = extract_mae_features(
+            projector, np_val_raw[0][:, :, after_cols, :],
+            stream_indices=list(range(n_streams_out)),
+            batch_size=sweep_hparams.get("batch_size", 256),
+        )
+        Z_mae_test_full  = extract_mae_features(
+            projector, np_test_raw[0][:, :, after_cols, :],
+            stream_indices=list(range(n_streams_out)),
+            batch_size=sweep_hparams.get("batch_size", 256),
+        )
+        # Old streams only — for retraining old-activity heads
+        # Missing streams are zero-padded inside extract_mae_features
+        Z_mae_train_old  = extract_mae_features(
+            projector, np_train_raw[0][:, :, before_cols, :],
+            stream_indices=list(range(n_before)),
+            batch_size=sweep_hparams.get("batch_size", 256),
+        )
+        Z_mae_val_old    = extract_mae_features(
+            projector, np_val_raw[0][:, :, before_cols, :],
+            stream_indices=list(range(n_before)),
+            batch_size=sweep_hparams.get("batch_size", 256),
+        )
+        Z_mae_test_old   = extract_mae_features(
+            projector, np_test_raw[0][:, :, before_cols, :],
+            stream_indices=list(range(n_before)),
+            batch_size=sweep_hparams.get("batch_size", 256),
+        )
+
+        # Update embed_dim to MAE proj_dim for head construction
+        mae_D = Z_mae_train_full.shape[-1]
+        print(f"  MAE features: train={Z_mae_train_full.shape}  "
+              f"val={Z_mae_val_full.shape}  test={Z_mae_test_full.shape}  D={mae_D}")
+
+        enc_val_loss = _measure_encoder_val_loss(projector, X_unlabeled_val)
+
+        # ── Retrain old-activity heads on MAE features ───────────────────────
+        # Old activities have only initial-stream lab samples available.
+        # We use real MAE features (with missing streams zero-padded) instead
+        # of synthetic imputed signals — no SimCLR black box, no imputation
+        # quality issues. The head trains on real signal patterns from the
+        # available streams.
+        print(f"  Retraining pre-increment heads on MAE features "
+              f"({len(pre_increment)} activities)...")
+        sweep_heads      = dict(state["heads"])
+        sweep_thresholds = dict(state["thresholds"])
+        cooc_graph       = cfg._dataset["cooccurrence_graph"]
+
+        for activity in pre_increment:
+            if activity not in label_dict:
+                continue
+            if (activity, fusion) not in sweep_heads:
+                continue
+
+            class_idx = label_dict[activity]
+            y_tr_bin  = (np_train_raw[1] == class_idx).astype(np.int32)
+            y_vl_bin  = (np_val_raw[1]   == class_idx).astype(np.int32)
+            y_te_bin  = make_multilabel_binary(activity, np_test_raw[1],
+                                               label_dict, cooccurrence_graph=cooc_graph)
+
+            n_pos = int(y_tr_bin.sum())
+            if n_pos == 0 or y_vl_bin.sum() == 0:
+                continue
+
+            # Balanced train set 10:1
+            max_neg = min(int((y_tr_bin==0).sum()), 10 * n_pos)
+            pos_idx = np.where(y_tr_bin == 1)[0]
+            neg_idx = np.where(y_tr_bin == 0)[0]
+            if len(neg_idx) > max_neg:
+                neg_idx = np.random.default_rng(cfg.SEED).choice(
+                    neg_idx, size=max_neg, replace=False)
+            keep_idx = np.concatenate([pos_idx, neg_idx])
+
+            Z_tr = Z_mae_train_old[keep_idx]
+            y_tr = y_tr_bin[keep_idx]
+            Z_vl = Z_mae_val_old
+            Z_te = Z_mae_test_old
+
+            print(f"    '{activity}'  pos:{n_pos}  neg:{len(neg_idx)}")
+
+            safe      = activity.replace(" ", "_")
+            save_path = os.path.join(
+                working_dir,
+                f"{timestamp}_mae_head_{safe}_{fusion}.pt"
+            )
+            best_model, best_auc = None, -1.0
+            for seed in [42, 123, 777]:
+                torch.manual_seed(seed)
+                cand = build_gated_head_from_features(
+                    [1.0] * n_streams_out, mae_D, fusion=fusion)
+                cand = train_head_fast(
+                    cand, Z_tr, y_tr, Z_vl, y_vl_bin, save_path,
+                    epochs=sweep_hparams.get("retrain_epochs", 20),
+                    lr=sweep_hparams.get("learning_rate", 1e-3),
+                    batch_size=sweep_hparams.get("batch_size", 200),
+                    focal_gamma=cfg.FOCAL_GAMMA,
+                    max_class_weight=cfg.MAX_CLASS_WEIGHT,
+                    early_stopping_patience=sweep_hparams.get(
+                        "early_stopping_patience", 10),
+                )
+                m = evaluate_head_fast(cand, Z_vl, y_vl_bin, threshold=0.5)
+                if m["auc"] > best_auc:
+                    best_auc, best_model = m["auc"], cand
+
+            thresh = find_optimal_threshold_fast(
+                best_model, Z_vl, y_vl_bin,
+                t_min=cfg.THRESHOLD_MIN, t_max=cfg.THRESHOLD_MAX,
+                fallback=cfg.THRESHOLD_FALLBACK,
+            )
+            sweep_heads[(activity, fusion)]      = best_model
+            sweep_thresholds[(activity, fusion)] = thresh
+
+            m = evaluate_head_fast(best_model, Z_te, y_te_bin, threshold=thresh)
+            print(f"      AUC:{m['auc']:.4f}  F1:{m['f1']:.4f}  thresh:{thresh:.3f}")
+
+        # ── Full-sensor evaluation on MAE features ───────────────────────────
+        # All heads (old and new) evaluated on real MAE features.
+        # Old acts: Z_mae_test_old (initial streams, new stream zero-padded)
+        # New acts: Z_mae_test_full (all streams)
+        # No synthetic embeddings in the evaluation path.
         old_act_metrics = evaluate_all_heads_fast(
             {k: v for k, v in sweep_heads.items() if k[0] in pre_increment},
-            Z_test_synth_old, np_test_raw[1],
+            Z_mae_test_old, np_test_raw[1],
             label_dict, sweep_thresholds, fusion,
             cooccurrence_graph=cooc_graph,
         )
         new_act_metrics = evaluate_all_heads_fast(
             {k: v for k, v in sweep_heads.items() if k[0] not in pre_increment},
-            Z_test_full, np_test_raw[1],
+            Z_mae_test_full, np_test_raw[1],
             label_dict, sweep_thresholds, fusion,
             cooccurrence_graph=cooc_graph,
         )
         full_metrics = {**old_act_metrics, **new_act_metrics}
 
-        # ── Missing-sensor scenario evaluations ──────────────────────────────
+        # ── Missing-sensor scenario evaluations (reconstruction quality) ─────
+        # Still uses imputation pipeline to track reconstruction quality.
+        # Separately reports imputation-based F1 for comparison.
         missing_metrics = {}
         for scenario in scenarios:
             scenario_key = "+".join(sorted(scenario)) + "_missing"
@@ -357,14 +495,14 @@ def run_encoder_fraction_sweep(
                 thresholds        = sweep_thresholds,
                 projector         = projector,
                 X_test_raw        = X_test_raw,
-                Z_test_full       = Z_test_full,
+                Z_test_full       = Z_mae_test_full,
                 y_int             = np_test_raw[1],
                 label_dict        = label_dict,
                 fusion            = fusion,
                 missing_sensors   = scenario,
                 all_stream_names  = streams_after,
                 n_streams_out     = n_streams_out,
-                embed_dim         = embed_dim,
+                embed_dim         = mae_D,
                 simclr_encoders   = encoders,
                 stream_to_encoder = cfg.STREAM_TO_ENCODER,
                 cooccurrence_graph= cooc_graph,
@@ -576,43 +714,128 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
 
     cooc_graph = cfg._dataset["cooccurrence_graph"]
 
-    # ── Load encoders + extract features ──────────────────────────────────────
+    # ── Load encoders (kept for API compatibility only — not used in pipeline) ─
     print("\nLoading encoder(s)...")
     encoders = load_encoders_from_cfg(cfg)
 
-    print("\nExtracting features (full stream set)...")
+    # SimCLR features no longer used for downstream tasks.
+    # MAE features replace SimCLR throughout (E1, sweep, E2).
     all_stream_names = cfg.FULL_STREAM_NAMES
-    all_stream_idx   = cfg.get_stream_indices(all_stream_names)
-
-    Z_train_all = extract_all_features(
-        np_train_raw[0], encoders, cfg.STREAM_TO_ENCODER,
-        all_stream_names, batch_size=cfg.BATCH_SIZE,
-        stream_indices=all_stream_idx,
-    )
-    Z_val_all   = extract_all_features(
-        np_val_raw[0], encoders, cfg.STREAM_TO_ENCODER,
-        all_stream_names, batch_size=cfg.BATCH_SIZE,
-        stream_indices=all_stream_idx,
-    )
-    Z_test_all  = extract_all_features(
-        np_test_raw[0], encoders, cfg.STREAM_TO_ENCODER,
-        all_stream_names, batch_size=cfg.BATCH_SIZE,
-        stream_indices=all_stream_idx,
-    )
-    D = Z_train_all.shape[-1]
-    logger.event("INFO", f"All-stream features: train={Z_train_all.shape} "
-                         f"val={Z_val_all.shape} test={Z_test_all.shape}")
-
-    def slice_features(Z_all, stream_names):
-        cols = [all_stream_names.index(s) for s in stream_names]
-        return Z_all[:, cols, :]
 
     current_streams = list(initial_sensors)
 
-    Z_train_cur    = slice_features(Z_train_all, current_streams)
-    Z_val_cur      = slice_features(Z_val_all,   current_streams)
-    Z_test_cur     = slice_features(Z_test_all,  current_streams)
-    feat_cache_cur = FeatureCache(Z_train_cur, Z_val_cur, Z_test_cur)
+    # ── Train 1-stream MAE on initial unlabeled FL data ───────────────────────
+    # MAE features replace SimCLR as the feature extractor for binary heads.
+    # This ensures E1 and post-increment use the same feature space so Δ is
+    # a clean comparison of "1-stream MAE" → "2-stream MAE".
+    print("\nLoading initial unlabeled data for MAE-1 training...")
+    ul_dir_init = cfg.UNLABELED_DATA_DIR
+    X_ul_init_tr, X_ul_init_vl = _load_unlabeled_raw(
+        ul_dir=ul_dir_init,
+        active_streams=list(initial_sensors),
+        cache_suffix="_" + "_".join(initial_sensors),
+    ) if ul_dir_init else (None, None)
+
+    if X_ul_init_tr is not None:
+        hp         = cfg.PROJECTOR_HPARAMS
+        ul_hp      = cfg.UNLABELED_ENCODER_HPARAMS
+        n_init     = len(initial_sensors)
+        T_raw      = X_ul_init_tr.shape[1]
+        C_raw      = X_ul_init_tr.shape[3]
+        proj_dim   = hp.get("proj_dim", 96)
+
+        print(f"\nTraining MAE-1 on {len(X_ul_init_tr)} unlabeled windows "
+              f"({initial_sensors})...")
+        # Cap at 10% using variance-stratified subsampling — same strategy
+        # as the sweep to ensure consistent representation of active windows
+        n_mae1     = max(1, int(len(X_ul_init_tr) * 0.10))
+        rng_mae1   = np.random.default_rng(cfg.SEED)
+        win_var_1  = X_ul_init_tr.var(axis=(1, 2, 3))
+        var_thr_1  = float(np.percentile(win_var_1, 50))
+        hi1        = rng_mae1.permutation(np.where(win_var_1 >= var_thr_1)[0])
+        lo1        = rng_mae1.permutation(np.where(win_var_1 <  var_thr_1)[0])
+        n_hi1      = min(int(n_mae1 * 0.40), len(hi1))
+        n_lo1      = min(n_mae1 - n_hi1, len(lo1))
+        X_ul_init_tr_sub = np.concatenate([
+            X_ul_init_tr[hi1[:n_hi1]],
+            X_ul_init_tr[lo1[:n_lo1]],
+        ], axis=0)
+        X_ul_init_tr_sub = X_ul_init_tr_sub[rng_mae1.permutation(len(X_ul_init_tr_sub))]
+        print(f"  Using {len(X_ul_init_tr_sub)}/{len(X_ul_init_tr)} windows "
+              f"(10%, stratified: {n_hi1} high-var + {n_lo1} low-var)")
+        # Build a 1-stream MAE — n_streams_in=0 (no missing, just reconstruct)
+        # We reuse build_projector with n_streams_in=0, n_streams_out=n_init
+        # The MAE learns cross-patch temporal structure on 1-stream data.
+        # Note: with only 1 stream, masking = temporal patch masking.
+        mae1_ckpt = os.path.join(
+            cfg.WORKING_DIR, f"{TIMESTAMP}_mae1_{'_'.join(initial_sensors)}.pt"
+        )
+        # build_projector requires n_streams_out > n_streams_in, use n_init, 0
+        # Override: build directly with n_streams_total = n_init
+        from projector import (CrossMaskedTransformer, StreamProjectionHead,
+                                train_raw_encoder, train_projection_head,
+                                extract_mae_features, _checkpoint)
+        d_model = hp.get("hidden_dim", 64)
+        n_heads = 4
+        while n_heads > 1 and d_model % n_heads != 0:
+            n_heads -= 1
+        mae1 = CrossMaskedTransformer(
+            n_streams_total=n_init, T=T_raw, C=C_raw,
+            patch_size=hp.get("patch_size", 10),
+            d_model=d_model, n_heads=n_heads, n_layers=3,
+        ).to(DEVICE)
+        mae1.proj_dim  = proj_dim
+        mae1.proj_head = StreamProjectionHead(
+            d_model=d_model, proj_dim=proj_dim, n_streams=n_init,
+        ).to(DEVICE)
+
+        mae1 = train_raw_encoder(
+            mae1, X_ul_init_tr_sub, X_ul_init_vl, mae1_ckpt,
+            epochs=ul_hp.get("epochs", 50),
+            lr=ul_hp.get("learning_rate", 1e-3),
+            batch_size=ul_hp.get("batch_size", 256),
+            early_stopping_patience=ul_hp.get("early_stopping_patience", 10),
+        )
+        mae1_proj_ckpt = mae1_ckpt.replace(".pt", "_proj.pt")
+        mae1 = train_projection_head(
+            mae1, X_ul_init_tr_sub, X_ul_init_vl, mae1_proj_ckpt,
+            stream_indices=list(range(n_init)),
+            epochs=hp.get("proj_epochs", 30),
+            lr=hp.get("proj_lr", 1e-3),
+            batch_size=ul_hp.get("batch_size", 256),
+        )
+
+        # Extract MAE-1 features for labeled data (initial streams only)
+        init_cols = [cfg.FULL_DATASET_STREAMS.index(s) for s in initial_sensors]
+        print(f"  Extracting MAE-1 features for labeled data...")
+        Z_mae1_train = extract_mae_features(
+            mae1, np_train_raw[0][:, :, init_cols, :],
+            stream_indices=list(range(n_init)),
+            batch_size=cfg.BATCH_SIZE,
+        )
+        Z_mae1_val   = extract_mae_features(
+            mae1, np_val_raw[0][:, :, init_cols, :],
+            stream_indices=list(range(n_init)),
+            batch_size=cfg.BATCH_SIZE,
+        )
+        Z_mae1_test  = extract_mae_features(
+            mae1, np_test_raw[0][:, :, init_cols, :],
+            stream_indices=list(range(n_init)),
+            batch_size=cfg.BATCH_SIZE,
+        )
+        D_mae        = Z_mae1_train.shape[-1]
+        feat_cache_cur = FeatureCache(Z_mae1_train, Z_mae1_val, Z_mae1_test)
+        D              = D_mae
+        print(f"  MAE-1 features: train={Z_mae1_train.shape}  D={D_mae}")
+        logger.event("INFO", f"MAE-1 features: train={Z_mae1_train.shape} D={D_mae}")
+    else:
+        # No unlabeled data — cannot train MAE-1.
+        # E1 requires unlabeled data for MAE feature extraction.
+        raise RuntimeError(
+            "No initial unlabeled data found — cannot train MAE-1. "
+            f"Set UNLABELED_DATA_DIR in config and ensure "
+            f"encoder_train_raw_{'_'.join(initial_sensors)}.npy exists."
+        )
 
     # ── Phase 1: Seed training ─────────────────────────────────────────────────
     if resume_e1_path:
@@ -628,7 +851,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
             initial_streams=current_streams,
         )
 
-    # ── E1 baseline metrics (co-occurrence aware) ──────────────────────────────
+    # ── E1 baseline metrics (co-occurrence aware, MAE-1 features) ─────────────
     seed_metrics_e1 = {}
     for act in seed_activities:
         if act not in label_dict:
@@ -639,7 +862,8 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
         )
         thresh = state["thresholds"].get((act, cfg.FUSION), 0.5)
         m = evaluate_head_fast(
-            state["heads"][(act, cfg.FUSION)], Z_test_cur, y_te, threshold=thresh
+            state["heads"][(act, cfg.FUSION)],
+            feat_cache_cur.test, y_te, threshold=thresh
         )
         seed_metrics_e1[act] = m
 
@@ -683,10 +907,9 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                     current_streams.append(s)
             new_sensor = "_".join(new_sensors)
 
-            Z_train_cur    = slice_features(Z_train_all, current_streams)
-            Z_val_cur      = slice_features(Z_val_all,   current_streams)
-            Z_test_cur     = slice_features(Z_test_all,  current_streams)
-            feat_cache_cur = FeatureCache(Z_train_cur, Z_val_cur, Z_test_cur)
+            # feat_cache_cur will be rebuilt with MAE-2 features after sweep.
+            # Use existing feat_cache_cur as placeholder until then.
+            pass
 
             state["sensor_incremented"]       = False
             state["full_streams"]             = list(current_streams)
@@ -730,9 +953,9 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                     X_train_old       = X_train_before,
                     X_val_old         = X_val_before,
                     X_test_old        = X_test_before,
-                    Z_train_full      = Z_train_cur,
-                    Z_val_full        = Z_val_cur,
-                    Z_test_full       = Z_test_cur,
+                    Z_train_full      = None,
+                    Z_val_full        = None,
+                    Z_test_full       = None,
                     X_test_raw        = X_test_after,
                     np_train_raw      = np_train_raw,
                     np_val_raw        = np_val_raw,
@@ -744,30 +967,90 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                     timestamp         = TIMESTAMP,
                     logger            = logger,
                     seed_metrics_e1   = seed_metrics_e1,
-                    encoders          = encoders,
+                    encoders          = None,
                 )
                 history.setdefault("encoder_sweeps", {})[new_sensor] = sweep_results
 
+                # Use best available fraction checkpoint (highest fraction trained)
+                best_frac_key = max(sweep_results.keys())
+                best_frac_pct = f"{best_frac_key:.0%}".replace('%', 'pct')
                 best_ckpt = os.path.join(
                     cfg.WORKING_DIR,
-                    f"{TIMESTAMP}_encoder_sweep_100pct.pt"
+                    f"{TIMESTAMP}_encoder_sweep_{best_frac_pct}_proj.pt"
                 )
+                if not os.path.exists(best_ckpt):
+                    best_ckpt = os.path.join(
+                        cfg.WORKING_DIR,
+                        f"{TIMESTAMP}_encoder_sweep_{best_frac_pct}.pt"
+                    )
                 if os.path.exists(best_ckpt):
                     from projector import load_projector as _lp
-                    state["projector"]            = _lp(best_ckpt,
-                        hidden_dim=cfg.PROJECTOR_HPARAMS.get("hidden_dim", 256))
+                    mae2 = _lp(best_ckpt,
+                        hidden_dim=cfg.PROJECTOR_HPARAMS.get("hidden_dim", 64))
+                    state["projector"]            = mae2
                     state["projector_path"]       = best_ckpt
                     state["projector_from_sweep"] = True
 
-                    best_frac_key = max(sweep_results.keys())
-                    best_sweep    = sweep_results[best_frac_key]
+                    best_sweep = sweep_results[best_frac_key]
                     if "sweep_heads" in best_sweep:
                         state["heads"].update(best_sweep["sweep_heads"])
                         state["thresholds"].update(best_sweep["sweep_thresholds"])
                         logger.event("INFO",
                             f"Injected sweep heads ({best_frac_key:.0%} fraction) into state.")
+
+                    # ── Rebuild feat_cache_cur with MAE-2 features ────────────
+                    # All subsequent E2 steps use MAE-2 features so the heads
+                    # trained in the sweep and the new-activity heads are in the
+                    # same feature space.
+                    after_cols_fc = [cfg.FULL_DATASET_STREAMS.index(s)
+                                     for s in current_streams]
+                    n_after_fc    = len(current_streams)
+                    print(f"  Rebuilding feat_cache with MAE-2 features "
+                          f"({current_streams})...")
+                    Z_mae2_tr = extract_mae_features(
+                        mae2, np_train_raw[0][:, :, after_cols_fc, :],
+                        stream_indices=list(range(n_after_fc)),
+                        batch_size=cfg.BATCH_SIZE,
+                    )
+                    Z_mae2_vl = extract_mae_features(
+                        mae2, np_val_raw[0][:, :, after_cols_fc, :],
+                        stream_indices=list(range(n_after_fc)),
+                        batch_size=cfg.BATCH_SIZE,
+                    )
+                    Z_mae2_te = extract_mae_features(
+                        mae2, np_test_raw[0][:, :, after_cols_fc, :],
+                        stream_indices=list(range(n_after_fc)),
+                        batch_size=cfg.BATCH_SIZE,
+                    )
+                    feat_cache_cur = FeatureCache(Z_mae2_tr, Z_mae2_vl, Z_mae2_te)
+                    D = Z_mae2_tr.shape[-1]
+                    state["feature_dim"] = D
+                    print(f"  feat_cache rebuilt: {Z_mae2_tr.shape}  D={D}")
+
+                    # ── Re-tune thresholds on full MAE-2 val features ─────────
+                    # Sweep thresholds were calibrated on zero-padded val
+                    # embeddings (initial streams only).  Full 3-stream val
+                    # embeddings have different score distributions — re-tune
+                    # so heads don't produce all-zeros at t1.
+                    print(f"  Re-tuning thresholds on full MAE-2 val features...")
+                    for (act, f), head in state["heads"].items():
+                        if f != cfg.FUSION or act not in label_dict:
+                            continue
+                        act_idx  = label_dict[act]
+                        y_vl_bin = (np_val_raw[1] == act_idx).astype(np.int32)
+                        if y_vl_bin.sum() == 0:
+                            continue
+                        thresh = find_optimal_threshold_fast(
+                            head, Z_mae2_vl, y_vl_bin,
+                            t_min=cfg.THRESHOLD_MIN,
+                            t_max=cfg.THRESHOLD_MAX,
+                            fallback=cfg.THRESHOLD_FALLBACK,
+                        )
+                        state["thresholds"][(act, f)] = thresh
+                    print(f"  Thresholds re-tuned on full MAE-2 val features.")
                     logger.event("INFO",
-                        "Injected best encoder (100% fraction) — bootstrap will be skipped.")
+                        "Injected best encoder (100% fraction) — bootstrap will be skipped."
+                        f"  feat_cache rebuilt with MAE-2 features D={D}")
             else:
                 logger.warn(
                     f"Step {step['t']}: sensor increment ('{new_sensor}') but no "
@@ -784,7 +1067,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
             np_test_raw  = np_test_raw,
             label_dict   = label_dict,
             logger       = logger,
-            encoders     = encoders,
+            encoders     = None,
             timestamp    = TIMESTAMP,
         )
 
@@ -800,7 +1083,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
             thresh = state["thresholds"].get((act, cfg.FUSION), 0.5)
             m = evaluate_head_fast(
                 state["heads"][(act, cfg.FUSION)],
-                Z_test_cur, y_te, threshold=thresh
+                feat_cache_cur.test, y_te, threshold=thresh
             )
             seed_f1[act] = {
                 "val_f1":  val_ood.get(act, {}).get("f1", float("nan")) if val_ood else float("nan"),

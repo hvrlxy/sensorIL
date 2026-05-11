@@ -8,7 +8,7 @@
 data/
 datasets/
 checkpoints/
-outputs/
+output/*
 results/
 wandb/
 __pycache__/
