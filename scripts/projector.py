@@ -39,9 +39,66 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PATCH TOKENIZER  (B, T, C) -> (B, P, d_model)
+# MULTI-SCALE PATCH TOKENIZER  (B, T, C) -> (B, P_total, d_model)
 # ─────────────────────────────────────────────────────────────────────────────
 
+class MultiScaleStreamTokenizer(nn.Module):
+    """
+    Parallel patch tokenizers at physiologically meaningful scales.
+
+    At 20Hz with T=100 (5-second window):
+      scale=10 (0.5s) : sub-stride events, heel-strike impulses
+      scale=20 (1.0s) : full stride cycle, push-up half-cycle
+      scale=50 (2.5s) : slow postural changes, full push-up cycle
+
+    Token counts: [10, 5, 2] = 17 total per stream.
+    With 3 streams: 51 context tokens — memory efficient.
+
+    Each stream has independent projection weights and scale embeddings
+    so wrist/ankle/thigh learn their own token vocabularies.
+    """
+    SCALES = [10, 20, 50]
+
+    def __init__(self, T: int = 100, C: int = 3,
+                 d_model: int = 64, dropout: float = 0.1):
+        super().__init__()
+        assert all(T % s == 0 for s in self.SCALES), \
+            f"T={T} must be divisible by all scales {self.SCALES}"
+        self.T           = T
+        self.C           = C
+        self.d_model     = d_model
+        self.scales      = self.SCALES
+        self.P_per_scale = [T // s for s in self.SCALES]   # [10, 5, 2]
+        self.P_total     = sum(self.P_per_scale)            # 17
+
+        # Stream-specific projection per scale
+        self.projs = nn.ModuleList([
+            nn.Linear(s * C, d_model) for s in self.SCALES
+        ])
+        self.norms = nn.ModuleList([
+            nn.LayerNorm(d_model) for _ in self.SCALES
+        ])
+        # Stream-specific scale embeddings
+        self.scale_emb = nn.Parameter(
+            torch.zeros(len(self.SCALES), d_model)
+        )
+        nn.init.trunc_normal_(self.scale_emb, std=0.02)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, T, C) → (B, P_total, d_model)"""
+        B = x.shape[0]
+        scale_tokens = []
+        for i, (s, P_s) in enumerate(zip(self.SCALES, self.P_per_scale)):
+            patches = x.reshape(B, P_s, s, self.C)
+            patches = patches.reshape(B, P_s, s * self.C)
+            toks    = self.drop(self.norms[i](self.projs[i](patches)))
+            toks    = toks + self.scale_emb[i]               # (B, P_s, d_model)
+            scale_tokens.append(toks)
+        return torch.cat(scale_tokens, dim=1)                 # (B, 16, d_model)
+
+
+# Keep single-scale tokenizer for the decoder queries (fixed P=10)
 class StreamPatchTokenizer(nn.Module):
     def __init__(self, T: int = 100, C: int = 3,
                  patch_size: int = 10, d_model: int = 64,
@@ -124,6 +181,17 @@ class CrossMaskedTransformer(nn.Module):
         ])
         self.stream_emb = nn.Parameter(torch.zeros(1, n_streams_total, 1, d_model))
         nn.init.trunc_normal_(self.stream_emb, std=0.02)
+        # Bias stream embeddings so ankle (s1) and thigh (s2) start closer
+        # together than wrist (s0) and thigh — gives the model a prior that
+        # ankle-thigh correlation is stronger without hard-constraining it.
+        # Only applied when we have exactly 3 streams (wrist, ankle, thigh).
+        if n_streams_total == 3:
+            with torch.no_grad():
+                # Push wrist embedding slightly away from ankle+thigh
+                self.stream_emb[0, 0, 0, :d_model//4] += 0.1
+                # Pull ankle and thigh embeddings slightly together
+                self.stream_emb[0, 1, 0, d_model//4:d_model//2] += 0.05
+                self.stream_emb[0, 2, 0, d_model//4:d_model//2] += 0.05
         self.patch_emb = nn.Parameter(torch.zeros(1, 1, T // patch_size, d_model))
         nn.init.trunc_normal_(self.patch_emb, std=0.02)
 
@@ -152,6 +220,7 @@ class CrossMaskedTransformer(nn.Module):
             StreamPatchDecoder(T, C, patch_size, d_model, dropout)
             for _ in range(n_streams_total)
         ])
+
 
     def _build_context(self, X: torch.Tensor, known_indices: list) -> torch.Tensor:
         B  = X.shape[0]
@@ -183,6 +252,24 @@ class CrossMaskedTransformer(nn.Module):
         queries = queries + self.cross_ffn(queries)
         return self.decoders[masked_stream](queries)
 
+    def forward_with_attn(
+        self, X: torch.Tensor, masked_stream: int, known_indices: list
+    ):
+        """Returns (pred, attn_weights, token_labels) for visualization."""
+        ctx     = self._build_context(X, known_indices)
+        queries = self._build_queries(ctx, masked_stream, len(known_indices))
+        attn_out, attn_w = self.cross_attn(
+            queries, ctx, ctx, need_weights=True, average_attn_weights=False
+        )
+        queries = self.cross_norm(queries + attn_out)
+        queries = queries + self.cross_ffn(queries)
+        pred    = self.decoders[masked_stream](queries)
+        tok_labels = []
+        for ki in known_indices:
+            for t_i in range(self.P):
+                tok_labels.append(f"S{ki}_t{t_i}")
+        return pred, attn_w, tok_labels
+
     def impute(self, X_known_c: torch.Tensor,
                known_indices: list, missing_indices: list) -> torch.Tensor:
         B, T, _, C = X_known_c.shape
@@ -199,62 +286,27 @@ class CrossMaskedTransformer(nn.Module):
         X: torch.Tensor,
         stream_indices: list | None = None,
     ) -> torch.Tensor:
-        """
-        Extract per-stream MAE embeddings without any masking.
-
-        Runs the context encoder on all available streams, averages the P
-        patch tokens per stream, and returns one vector per stream.
-
-        For streams not in stream_indices (missing at training time), the
-        output is zero-padded so the shape is always (B, S_total, d_model).
-
-        Parameters
-        ----------
-        X              : (B, T, S_in, C)  raw DC-removed signals
-        stream_indices : list[int] | None
-            Which columns of the full S_total-dim tensor these streams
-            correspond to.  If None, assumes X covers all S_total streams
-            in order.
-
-        Returns
-        -------
-        Z : (B, S_total, d_model)
-        """
         B    = X.shape[0]
         S_in = X.shape[2]
         S    = self.n_streams_total
-
         if stream_indices is None:
             stream_indices = list(range(S_in))
-
-        # Tokenize each input stream: (B, P, d_model) each
         patch_tokens = []
         for local_idx in range(S_in):
             toks = self.tokenizers[stream_indices[local_idx]](X[:, :, local_idx, :])
-            patch_tokens.append(toks)                       # (B, P, d_model)
-
-        # Stack → (B, S_in, P, d_model), add positional embeddings
-        tokens = torch.stack(patch_tokens, dim=1)           # (B, S_in, P, d_model)
+            patch_tokens.append(toks)
+        tokens = torch.stack(patch_tokens, dim=1)
         tokens = (tokens
                   + self.stream_emb[:, stream_indices, :, :]
                   + self.patch_emb)
-
-        # Interleave by time → (B, P*S_in, d_model), run context encoder
         tokens = tokens.permute(0, 2, 1, 3).reshape(B, self.P * S_in, self.d_model)
-        ctx    = self.context_encoder(tokens)                # (B, P*S_in, d_model)
-
-        # Reshape to (B, P, S_in, d_model), average patches → (B, S_in, d_model)
+        ctx    = self.context_encoder(tokens)  # no stream importance — all streams equal
         ctx    = ctx.reshape(B, self.P, S_in, self.d_model)
-        Z_in   = ctx.mean(dim=1)                             # (B, S_in, d_model)
-
-        # Zero-pad to full (B, S_total, d_model)
+        Z_in   = ctx.mean(dim=1)
         Z_out  = torch.zeros(B, S, self.d_model, device=X.device)
         for local_idx, global_idx in enumerate(stream_indices):
             Z_out[:, global_idx, :] = Z_in[:, local_idx, :]
-
-        return Z_out                                         # (B, S_total, d_model)
-
-
+        return Z_out
 RawSignalEncoder = CrossMaskedTransformer
 
 
@@ -332,7 +384,7 @@ def train_raw_encoder(
     save_path: str,
     epochs: int = 50, lr: float = 1e-3, batch_size: int = 256,
     early_stopping_patience: int = 10,
-    spectral_weight: float = 1.0,
+    spectral_weight: float = 0.0,   # disabled — causes high-freq artifacts on thigh
     deriv_weight:    float = 0.5,
     dist_weight:     float = 1.0,
     **kwargs,
@@ -357,10 +409,10 @@ def train_raw_encoder(
         encoder.train()
         idx = torch.randperm(N)
         if epoch == 1:
-            P = getattr(encoder, 'P', '?')
+            P = getattr(encoder, 'P_total', getattr(encoder, 'P', '?'))
             print(f"  [MAE] Epoch 1  batch={batch_size}  lr={lr}  "
                   f"spectral={spectral_weight}  deriv={deriv_weight}  "
-                  f"dist={dist_weight}  S={S}  P={P}  "
+                  f"dist={dist_weight}  S={S}  P_total={P}  "
                   f"seq_len={S*(P if isinstance(P,int) else 0)}", flush=True)
 
         epoch_loss, n_batches = 0.0, 0
@@ -433,103 +485,28 @@ def train_raw_encoder(
     if best_ckpt is not None:
         encoder.load_state_dict(best_ckpt)
 
-    torch.save(_checkpoint(encoder), save_path)
-    return encoder
-    print(f"  [MAE] X_train={X_train.shape}  X_val={X_val.shape}", flush=True)
-    S       = X_train.shape[2]
-    encoder = encoder.to(DEVICE)
-    opt     = torch.optim.AdamW(encoder.parameters(), lr=lr, weight_decay=1e-4)
-    sched   = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=lr*0.05)
-    X_tr    = torch.from_numpy(X_train.astype(np.float32))
-    X_vl    = torch.from_numpy(X_val.astype(np.float32))
-    N       = len(X_tr)
-    best_val, best_ckpt, patience_count = float("inf"), None, 0
-    rng = np.random.default_rng(42)
-
-    for epoch in range(1, epochs + 1):
-        encoder.train()
-        idx = torch.randperm(N)
-        if epoch == 1:
-            P = getattr(encoder, 'P', '?')
-            print(f"  [MAE] Epoch 1  batch={batch_size}  lr={lr}  "
-                  f"spectral={spectral_weight}  deriv={deriv_weight}  "
-                  f"dist={dist_weight}  S={S}  P={P}  "
-                  f"seq_len={S*(P if isinstance(P,int) else 0)}", flush=True)
-
-        epoch_loss, n_batches = 0.0, 0
-        for i in range(0, N, batch_size):
-            batch  = X_tr[idx[i:i+batch_size]].to(DEVICE)
-            m      = int(rng.integers(0, S))
-            target = batch[:, :, m, :]
-            pred   = encoder(batch, masked_stream=m)
-
-            with torch.no_grad():
-                win_var = target.var(dim=1).mean(dim=-1)
-                w       = win_var / (win_var.mean() + 1e-8)
-                w       = w.clamp(0.2, 5.0)
-                w       = w / w.mean()
-
-            per_sample_l1 = (pred - target).abs().mean(dim=(1, 2))
-            l1_weighted   = (per_sample_l1 * w).mean()
-            _, _, spec, deriv, dist = reconstruction_loss(
-                pred, target,
-                spectral_weight=spectral_weight,
-                deriv_weight=deriv_weight,
-                dist_weight=dist_weight,
-            )
-            loss = (l1_weighted
-                    + spectral_weight * spec
-                    + deriv_weight    * deriv
-                    + dist_weight     * dist)
-            opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
-            opt.step()
-            epoch_loss += loss.item()
-            n_batches  += 1
-
-        sched.step()
-
-        encoder.eval()
-        val_loss, n_val = 0.0, 0
-        pm = S - 1
-        with torch.no_grad():
-            for i in range(0, len(X_vl), batch_size):
-                b      = X_vl[i:i+batch_size].to(DEVICE)
-                tgt    = b[:, :, pm, :]
-                pred   = encoder(b, masked_stream=pm)
-                v, *_  = reconstruction_loss(pred, tgt,
-                    spectral_weight=spectral_weight,
-                    deriv_weight=deriv_weight,
-                    dist_weight=dist_weight)
-                val_loss += v.item()
-                n_val    += 1
-        val_loss /= max(1, n_val)
-
-        if epoch % 10 == 0 or epoch == 1:
-            print(f"  [MAE] epoch={epoch:3d}  "
-                  f"train={epoch_loss/max(1,n_batches):.5f}  "
-                  f"val={val_loss:.5f}", flush=True)
-
-        if val_loss < best_val:
-            best_val       = val_loss
-            best_ckpt      = {k: v.cpu().clone() for k, v in encoder.state_dict().items()}
-            patience_count = 0
-        else:
-            patience_count += 1
-            if patience_count >= early_stopping_patience:
-                print(f"  [MAE] Early stop epoch {epoch}  best_val={best_val:.6f}")
-                break
-
-    if epoch == epochs:
-        print(f"  [MAE] Done epoch {epoch}  best_val={best_val:.6f}")
-    if best_ckpt is not None:
-        encoder.load_state_dict(best_ckpt)
+    # ── Amplitude calibration ─────────────────────────────────────────────────
+    # Compute per-stream std ratio on DC-removed signals (dynamic range only).
+    # Used at imputation time to correct the model's amplitude under-prediction
+    # for high-energy activities like cycling where thigh amplitude >> ankle.
+    encoder.eval()
+    arr      = X_train[:min(10_000, len(X_train))]
+    arr_dc   = arr - arr.mean(axis=1, keepdims=True)    # DC-remove for dynamic std
+    win_var  = arr_dc.var(axis=(1, 2, 3))
+    thr      = float(np.percentile(win_var, 50))
+    arr_hi   = arr_dc[win_var > thr]                    # top-50% active windows
+    stream_std_ratios = {}
+    for s in range(S):
+        ks  = [i for i in range(S) if i != s]
+        tgt = arr_hi[:, :, s,  :].std(axis=(1, 2))
+        kno = arr_hi[:, :, ks, :].std(axis=(1, 2, 3))
+        stream_std_ratios[s] = float(np.median(tgt / (kno + 1e-6)))
+    encoder.stream_std_ratios = stream_std_ratios
+    print(f"  [MAE] stream_std_ratios (top-50%, n={len(arr_hi)}): "
+          f"{[f's{k}:{v:.3f}' for k, v in stream_std_ratios.items()]}")
 
     torch.save(_checkpoint(encoder), save_path)
     return encoder
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # IMPUTATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -543,6 +520,7 @@ def impute_missing_streams(
     batch_size: int = 256, n_samples: int = 1,
 ) -> np.ndarray:
     encoder.eval()
+    std_ratios      = getattr(encoder, "stream_std_ratios", {})
     missing_indices = [j for j in range(n_streams_total) if j not in known_indices]
     results = []
 
@@ -552,23 +530,167 @@ def impute_missing_streams(
                 X_known[i:i+batch_size].astype(np.float32)
             ).to(DEVICE)
 
-            # Feed raw absolute signals — no DC removal.
-            # MAE trained on absolute signals can infer target DC from known streams.
-            X_full_c = encoder.impute(bk, known_indices, missing_indices)
+            X_full = encoder.impute(bk, known_indices, missing_indices)
+
+            # Amplitude correction on dynamic component only.
+            # The MAE predicts absolute signal but under-estimates dynamic range
+            # for high-energy activities (cycling thigh >> ankle amplitude).
+            # Correct using the DC-removed std ratio learned from training data.
+            bk_dc = bk - bk.mean(dim=1, keepdim=True)
+            known_energy = bk_dc.std(dim=1).mean(dim=(1, 2), keepdim=True)  # (B,1,1)
+
+            for m_idx in missing_indices:
+                ratio = std_ratios.get(m_idx, 1.0)
+                pred  = X_full[:, :, m_idx, :]             # (B, T, C) absolute
+
+                # Separate DC and dynamic components
+                pred_dc  = pred.mean(dim=1, keepdim=True)  # (B, 1, C)
+                pred_dyn = pred - pred_dc                   # DC-removed shape
+
+                # Scale dynamic component to match expected amplitude
+                pred_dyn_std = pred_dyn.std(dim=1, keepdim=True).clamp(min=1e-6)
+                scale = (known_energy * ratio / pred_dyn_std).clamp(0.3, 5.0)
+                X_full[:, :, m_idx, :] = pred_dyn * scale + pred_dc
 
             for out_pos, src_pos in enumerate(known_indices):
-                X_full_c[:, :, src_pos, :] = bk[:, :, out_pos, :]
-            results.append(X_full_c.cpu().numpy())
+                X_full[:, :, src_pos, :] = bk[:, :, out_pos, :]
+            results.append(X_full.cpu().numpy())
 
     X_imputed = np.concatenate(results, axis=0)
     if missing_indices:
         imp_var   = float(np.var(X_imputed[:, :, missing_indices, :]))
         known_var = float(np.var(X_known))
-        ratio     = imp_var / (known_var + 1e-8)
-        status    = "OK" if 0.3 < ratio < 3.0 else "WARN"
+        ratio_diag = imp_var / (known_var + 1e-8)
+        status    = "OK" if 0.3 < ratio_diag < 3.0 else "WARN"
         print(f"  [MAEImpute] imp_var={imp_var:.4f}  "
-              f"known_var={known_var:.4f}  ratio={ratio:.2f}  [{status}]")
+              f"known_var={known_var:.4f}  ratio={ratio_diag:.2f}  [{status}]")
     return X_imputed
+
+
+def visualize_token_attention(
+    encoder: CrossMaskedTransformer,
+    X_sample: np.ndarray,
+    known_indices: list,
+    missing_idx: int,
+    stream_names: list,
+    out_path: str,
+    sample_idx: int = 0,
+):
+    """
+    Visualize cross-attention weights for one sample.
+
+    Shows which context tokens (wrist/ankle at each scale and time position)
+    the decoder attends to when predicting each output token of the target stream.
+
+    X_sample   : (N, T, S, C) — pass a small batch
+    known_indices : [0, 1] for wrist+ankle
+    missing_idx   : 2 for thigh
+    stream_names  : ['LeftWrist', 'RightAnkle', 'RightThigh']
+    out_path      : path to save the figure
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+
+    encoder.eval()
+    with torch.no_grad():
+        batch = torch.from_numpy(
+            X_sample[:sample_idx+1].astype(np.float32)
+        ).to(DEVICE)
+        pred, attn_w, tok_labels = encoder.forward_with_attn(
+            batch, missing_idx, known_indices
+        )
+
+    # attn_w: (B, n_heads, P, P_total*Sk) — take sample 0, average heads
+    attn = attn_w[0].mean(dim=0).cpu().numpy()   # (P, P_total*Sk)
+    P, ctx_len = attn.shape
+    T = X_sample.shape[1]
+    pred_np = pred[0].cpu().numpy()              # (T, C)
+
+    # Color-code token labels by stream and scale
+    tok_colors = []
+    stream_color_map = {ki: c for ki, c in
+                        zip(known_indices, ['#2196F3', '#4CAF50', '#E53935',
+                                            '#FF9800', '#9C27B0'])}
+    for lbl in tok_labels:
+        ki = int(lbl.split('_')[0][1:])
+        tok_colors.append(stream_color_map.get(ki, '#888'))
+
+    fig = plt.figure(figsize=(max(14, ctx_len * 0.5 + 4), 10))
+    gs  = gridspec.GridSpec(2, 1, figure=fig, hspace=0.5,
+                             height_ratios=[2, 1])
+
+    # ── Attention heatmap ────────────────────────────────────────────────────
+    ax_attn = fig.add_subplot(gs[0])
+    im = ax_attn.imshow(attn, aspect='auto', cmap='Blues',
+                        vmin=0, vmax=attn.max())
+    ax_attn.set_xlabel("Context token  (stream_scale_timepos)", fontsize=9)
+    ax_attn.set_ylabel(f"Decoder query token\n(→ {stream_names[missing_idx]})", fontsize=9)
+    ax_attn.set_xticks(range(ctx_len))
+    ax_attn.set_xticklabels(tok_labels, rotation=90, fontsize=6)
+    ax_attn.set_yticks(range(P))
+    ax_attn.set_yticklabels([f"q{i}" for i in range(P)], fontsize=7)
+    ax_attn.set_title(
+        f"Cross-attention: decoder ({stream_names[missing_idx]}) ← context "
+        f"({[stream_names[k] for k in known_indices]})\n"
+        f"Rows=output token positions, Cols=input context tokens by scale+time",
+        fontsize=9
+    )
+    plt.colorbar(im, ax=ax_attn, shrink=0.6)
+
+    # Colour-code x-axis labels by stream
+    for tick, color in zip(ax_attn.get_xticklabels(), tok_colors):
+        tick.set_color(color)
+
+    # Add vertical separators between streams
+    P_total = getattr(encoder.tokenizers[0], 'P_total', encoder.P)
+    for sep in range(1, len(known_indices)):
+        ax_attn.axvline(sep * P_total - 0.5, color='red', lw=1.5, alpha=0.7)
+
+    # Add horizontal separators between scales within each stream
+    if hasattr(encoder.tokenizers[0], 'P_per_scale'):
+        P_per = encoder.tokenizers[0].P_per_scale
+        for ki_pos in range(len(known_indices)):
+            offset = ki_pos * P_total
+            cum = 0
+            for p_s in P_per[:-1]:
+                cum += p_s
+                ax_attn.axvline(offset + cum - 0.5, color='gray',
+                                lw=0.8, alpha=0.5, linestyle='--')
+
+    # ── Predicted vs real signal (y-axis, most informative for orientation) ─
+    ax_sig = fig.add_subplot(gs[1])
+    t = np.arange(T)
+    real = X_sample[sample_idx, :, missing_idx, :]   # (T, C)
+    axis_colors = ['#2196F3', '#4CAF50', '#E53935']
+    axis_names  = ['x', 'y', 'z']
+    for c in range(real.shape[1]):
+        ax_sig.plot(t, real[:, c], color=axis_colors[c], lw=1.4, alpha=0.9,
+                    label=f"Real {axis_names[c]}")
+        ax_sig.plot(t, pred_np[:, c], color=axis_colors[c], lw=1.2,
+                    alpha=0.55, linestyle='--',
+                    label=f"Pred {axis_names[c]}")
+    ax_sig.set_xlabel("Timestep", fontsize=8)
+    ax_sig.set_ylabel(stream_names[missing_idx], fontsize=8)
+    ax_sig.legend(fontsize=7, ncol=3, loc='upper right')
+    ax_sig.set_title("Reconstructed vs real target signal", fontsize=9)
+
+    # Add vertical lines showing query token boundaries
+    q_step = T // P
+    for qi in range(1, P):
+        ax_sig.axvline(qi * q_step, color='gray', lw=0.6, alpha=0.4)
+
+    fig.suptitle(
+        f"Token attention visualization  |  "
+        f"Known: {[stream_names[k] for k in known_indices]}  →  "
+        f"Target: {stream_names[missing_idx]}",
+        fontsize=10, fontweight='bold'
+    )
+    plt.savefig(out_path, dpi=100, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Attention plot saved: {out_path}")
+    return attn, tok_labels
 
 
 def diagnose_imputation_quality(
