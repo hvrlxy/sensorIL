@@ -1,48 +1,62 @@
 """
 detect_confusion.py
 
-Step 2: Identify confused classes from val set performance.
+Step 2: Detect classes that struggle under the n-sensor base model.
 
-For each class, compute:
-  - Val F1 score from binary classifier
-  - Confusion pairs: which other classes are most confused with it
-
-Returns ranked list of classes by confusion level.
+Ranks ALL classes by F1 score (ascending) — any class with low F1
+is a candidate for re-annotation regardless of how it's misclassified.
+Also records what each class gets confused with for the benefit
+estimation step.
 
 Usage:
     python scripts/detect_confusion.py --config configs/pipeline_config.json \
-                                        --checkpoint checkpoints/base_classifiers.pt
+                                        --base-checkpoint checkpoints/base_classifiers.pt
 """
 
 import json
 import argparse
 import torch
 import numpy as np
-from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score, confusion_matrix
+from torch.utils.data import DataLoader
 
 from simclr_encoder import load_simclr_encoder, encode_sensors, ENCODER_DIM
 from dataset import SensorDataset
 from train_base import BinaryClassifier
-from cooccurrence import are_related
 
 
-def detect_confusion(config, checkpoint_path, device, top_k=None):
+def detect_confusion(config, base_ckpt_path, device, top_k=None):
     print(f"\n{'='*60}")
     print(f"Step 2: Detecting confused classes")
     print(f"{'='*60}")
 
-    sensors   = config["sensors"]["known_sensors"]
-    input_dim = len(sensors) * ENCODER_DIM
+    known_sensors = config["sensors"]["known_sensors"]
+    input_dim     = len(known_sensors) * ENCODER_DIM
 
-    # Load encoder
     encoder = load_simclr_encoder(config["model"]["encoder_path"], device)
 
-    # Load classifiers
-    ckpt        = torch.load(checkpoint_path, map_location=device)
-    class_names = ckpt["class_names"]
-    n_classes   = ckpt["n_classes"]
+    # Load val data
+    val_ds = SensorDataset(
+        data_dir              = config["data"]["labeled_dir"],
+        sensors               = known_sensors,
+        max_samples_per_class = config["finetune"]["few_shot_samples_per_class"],
+        split                 = "val",
+        val_split             = config["finetune"]["val_split"]
+    )
+    class_names = val_ds.class_names
+    n_classes   = val_ds.n_classes
 
+    loader = DataLoader(val_ds, batch_size=512, shuffle=False,
+                        num_workers=2, pin_memory=True)
+    all_z, all_y = [], []
+    for x, y in loader:
+        all_z.append(encode_sensors(encoder, x, device))
+        all_y.append(y)
+    z_val = torch.cat(all_z)
+    y_val = torch.cat(all_y).numpy()
+
+    # Load classifiers
+    ckpt        = torch.load(base_ckpt_path, map_location=device)
     classifiers = {}
     for name in class_names:
         idim = ckpt.get("input_dims", {}).get(name, ckpt.get("input_dim", input_dim))
@@ -51,137 +65,133 @@ def detect_confusion(config, checkpoint_path, device, top_k=None):
         clf.eval()
         classifiers[name] = clf
 
-    # Load val data
-    val_ds = SensorDataset(
-        data_dir              = config["data"]["labeled_dir"],
-        sensors               = sensors,
-        max_samples_per_class = config["finetune"]["few_shot_samples_per_class"],
-        split                 = "val",
-        val_split             = config["finetune"]["val_split"]
-    )
-    val_loader = DataLoader(val_ds, batch_size=256, shuffle=False)
-
-    # Encode val set
-    all_z, all_y = [], []
-    for x, y in val_loader:
-        z = encode_sensors(encoder, x, device)
-        all_z.append(z)
-        all_y.append(y)
-    z_val = torch.cat(all_z).to(device)
-    y_val = torch.cat(all_y).numpy()
-
-    # Get predictions from all binary classifiers (batched)
+    # Get scores — batched
     n_val  = len(y_val)
     scores = np.zeros((n_val, n_classes))
+    z_dev  = z_val.to(device)
     bs     = 4096
-    z_val_dev = z_val.to(device)
+
     with torch.no_grad():
         for i, name in enumerate(class_names):
             clf_scores = []
             for start in range(0, n_val, bs):
                 clf_scores.append(
-                    torch.sigmoid(classifiers[name](z_val_dev[start:start+bs])).cpu().numpy()
+                    torch.sigmoid(classifiers[name](z_dev[start:start+bs])).cpu().numpy()
                 )
             scores[:, i] = np.concatenate(clf_scores)
 
-    # Independent per-class binary predictions
-    # For confusion detection: convert multi-label to single prediction
-    # by picking highest-scoring class that fires, or highest overall
+    # Predict: threshold-based only — no argmax fallback
+    # If nothing fires, mark as -1 (no prediction)
     threshold = 0.5
-    n = len(scores)
-    preds = np.zeros(n, dtype=int)
-    for j in range(n):
+    preds = np.full(n_val, -1, dtype=int)
+    for j in range(n_val):
         fired = np.where(scores[j] > threshold)[0]
         if len(fired) == 1:
             preds[j] = fired[0]
         elif len(fired) > 1:
             preds[j] = fired[scores[j, fired].argmax()]
-        else:
-            preds[j] = scores[j].argmax()
+        # else: no prediction (-1)
 
-    # Per-class F1 + overall macro/weighted
-    f1_scores    = f1_score(y_val, preds, average=None,
-                            labels=list(range(n_classes)),
-                            zero_division=0)
-    macro_f1     = f1_score(y_val, preds, average="macro",    zero_division=0)
-    weighted_f1  = f1_score(y_val, preds, average="weighted", zero_division=0)
+    n_no_pred = (preds == -1).sum()
+    if n_no_pred > 0:
+        print(f"  {n_no_pred}/{n_val} windows had no classifier fire above threshold")
+
+    # Per-class F1
+    f1_scores   = f1_score(y_val, preds, average=None,
+                           labels=list(range(n_classes)), zero_division=0)
+    macro_f1    = f1_score(y_val, preds, average="macro",    zero_division=0)
+    weighted_f1 = f1_score(y_val, preds, average="weighted", zero_division=0)
     print(f"\nBase model val — Macro F1: {macro_f1:.4f} | Weighted F1: {weighted_f1:.4f}")
 
-    # Confusion matrix for confusion pairs
-    cm = confusion_matrix(y_val, preds, labels=list(range(n_classes)))
+    # Build per-class confusion using binary scores directly
+    # For each class A:
+    #   - A window of class A is "confused" if A's classifier did not fire
+    #   - "confused_with" = unrelated classes whose classifiers DID fire on A's windows
+    #
+    # This correctly handles hierarchy:
+    #   Treadmill window → Walking fires = correct, not a confusion
+    #   Treadmill window → Standing fires = confusion (unrelated)
 
-    # Confusion score per class: sum of off-diagonal elements
-    # EXCLUDING related classes (ancestors/descendants via co-occurrence)
-    # e.g. Treadmill confused with Walking is expected — not a real confusion
+    from cooccurrence import get_all_related
+
     confusion_scores = []
-    confusion_pairs  = {}
-
     for i, name in enumerate(class_names):
-        row = cm[i].copy()
-        row[i] = 0
+        # Windows that truly belong to class A
+        a_mask    = (y_val == i)
+        n_a       = a_mask.sum()
+        if n_a == 0:
+            confusion_scores.append({
+                "class": name, "class_id": i, "f1": float(f1_scores[i]),
+                "confusion_score": 0, "confused_as": []
+            })
+            continue
 
-        # Zero out related class confusions (expected by hierarchy)
-        for j, other in enumerate(class_names):
-            if are_related(name, other):
-                row[j] = 0
+        a_scores  = scores[a_mask]   # (n_a, n_classes)
 
-        col = cm[:, i].copy()
-        col[i] = 0
-        for j, other in enumerate(class_names):
-            if are_related(name, other):
-                col[j] = 0
+        # How many of A's windows did NOT have A's classifier fire?
+        a_not_fired = (a_scores[:, i] <= threshold).sum()
 
-        confused_as   = row.sum()
-        confused_with = col.sum()
-        total_confusion = confused_as + confused_with
+        # For windows where A did not fire, which UNRELATED classes fired?
+        related_classes = get_all_related(name)  # includes self + ancestors
+        related_idx     = {j for j, cn in enumerate(class_names)
+                           if cn in related_classes}
 
-        # Top confused pairs (unrelated only)
-        top_confused_idx = row.argsort()[::-1][:3]
-        pairs = [(class_names[j], int(row[j]))
-                 for j in top_confused_idx if row[j] > 0]
+        confused_with = {}
+        for idx in np.where(a_mask)[0]:
+            if scores[idx, i] > threshold:
+                continue  # A fired correctly, skip
+            # Find unrelated classes that fired
+            for j in range(n_classes):
+                if j == i or j in related_idx:
+                    continue
+                if scores[idx, j] > threshold:
+                    confused_with[class_names[j]] =                         confused_with.get(class_names[j], 0) + 1
+
+        # Sort by count
+        confused_as = sorted(confused_with.items(), key=lambda x: -x[1])[:5]
 
         confusion_scores.append({
             "class"          : name,
             "class_id"       : i,
             "f1"             : float(f1_scores[i]),
-            "confusion_score": int(total_confusion),
-            "confused_as"    : pairs
+            "confusion_score": int(a_not_fired),
+            "confused_as"    : confused_as
         })
-        confusion_pairs[name] = pairs
 
-    # Sort by confusion score descending
-    confusion_scores.sort(key=lambda x: x["confusion_score"], reverse=True)
+    # Sort by F1 ascending — worst performing classes first
+    confusion_scores.sort(key=lambda x: x["f1"])
 
-    print(f"\n{'Class':45s} {'F1':>8} {'Confusion':>10} {'Confused with'}")
+    # Apply top_k if specified
+    if top_k is not None:
+        confusion_scores = confusion_scores[:top_k]
+
+    confused_classes = [item["class"] for item in confusion_scores]
+
+    # Print table
+    print(f"\n{'Class':50s} {'F1':>6}  {'Confusion':>9}  {'Confused with'}")
     print("─" * 90)
     for item in confusion_scores:
-        pairs_str = ", ".join([f"{p[0]}({p[1]})" for p in item["confused_as"][:2]])
-        print(f"{item['class']:45s} {item['f1']:8.3f} "
-              f"{item['confusion_score']:10d}   {pairs_str}")
+        pairs_str = ", ".join(f"{c}({n})" for c, n in item["confused_as"][:3])
+        print(f"{item['class']:50s} {item['f1']:6.3f}  {item['confusion_score']:9d}  "
+              f"{pairs_str}")
 
-    # Select top_k most confused classes
-    if top_k is None:
-        top_k = config.get("active_learning", {}).get("top_k_confused", 10)
-
-    confused_classes = [item["class"] for item in confusion_scores[:top_k]]
-    print(f"\nTop {top_k} confused classes: {confused_classes}")
-
+    print(f"\nAll {len(confused_classes)} classes ranked by F1 (ascending)")
     return confusion_scores, confused_classes
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config",     type=str, required=True)
-    parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--top-k",      type=int, default=None)
-    parser.add_argument("--device",     type=str, default="cuda")
+    parser.add_argument("--config",          type=str, required=True)
+    parser.add_argument("--base-checkpoint", type=str, required=True)
+    parser.add_argument("--device",          type=str, default="cuda")
+    parser.add_argument("--top-k",           type=int, default=None)
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = json.load(f)
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    detect_confusion(config, args.checkpoint, device, args.top_k)
+    detect_confusion(config, args.base_checkpoint, device, args.top_k)
 
 
 if __name__ == "__main__":

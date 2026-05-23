@@ -101,7 +101,7 @@ def generate_configs(n_base):
 # Run one sensor config
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_sensor_config(base_config, sensor_config, device, log_dir):
+def run_sensor_config(base_config, sensor_config, device, log_dir, budgets=None):
     name   = sensor_config["name"]
     config = copy.deepcopy(base_config)
     config["sensors"]["known_sensors"] = sensor_config["known_sensors"]
@@ -130,15 +130,7 @@ def run_sensor_config(base_config, sensor_config, device, log_dir):
     )
     print(f"  Target classes ({len(target_classes)}): {target_classes}")
 
-    # ── Incremental fine-tuning ───────────────────────────────────────────
-    inc_ckpt, _, _, _ = incremental_ft(
-        config, base_ckpt, target_classes, device, verbose=False
-    )
-    inc_ckpt_named = os.path.join(ckpt_dir, f"incremental_{name}.pt")
-    shutil.copy(inc_ckpt, inc_ckpt_named)
-    calibrate_thresholds(config, inc_ckpt_named, device, verbose=False)
-
-    # ── Oracle ────────────────────────────────────────────────────────────
+    # ── Oracle (train once) ──────────────────────────────────────────────
     oracle_ckpt = os.path.join(ckpt_dir, f"oracle_{name}.pt")
     if not os.path.exists(oracle_ckpt):
         config_oracle = copy.deepcopy(config)
@@ -149,7 +141,7 @@ def run_sensor_config(base_config, sensor_config, device, log_dir):
         print(f"  [cached] oracle checkpoint")
     calibrate_thresholds(config, oracle_ckpt, device, verbose=False)
 
-    # ── Evaluate ──────────────────────────────────────────────────────────
+    # ── Encode test data once ──────────────────────────────────────────────
     encoder = load_simclr_encoder(config["model"]["encoder_path"], device)
     known   = config["sensors"]["known_sensors"]
     all_s   = known + config["sensors"]["new_sensor"]
@@ -169,66 +161,96 @@ def run_sensor_config(base_config, sensor_config, device, log_dir):
         return f1_arr, macro, weighted
 
     f1_b, macro_b, wtd_b = eval_ckpt(base_ckpt)
-    f1_i, macro_i, wtd_i = eval_ckpt(inc_ckpt_named)
     f1_o, macro_o, wtd_o = eval_ckpt(oracle_ckpt)
 
-    # Print per-class table
-    print_combined_table(
-        class_names, f1_b, f1_i, f1_o,
-        set(target_classes),
-        macro_b, macro_i, macro_o,
-        wtd_b,   wtd_i,   wtd_o,
-        len(target_classes)
-    )
+    # ── Parse budgets ──────────────────────────────────────────────────────
+    if budgets is None:
+        budgets = ["all"]
+    budget_results = []
 
-    # Targeted metrics
-    tgt_idx       = [class_names.index(c) for c in target_classes if c in class_names]
-    tgt_deltas    = f1_i[tgt_idx] - f1_b[tgt_idx]
-    oracle_deltas = f1_o[tgt_idx] - f1_b[tgt_idx]
-    n_imp         = int((tgt_deltas >  0.01).sum())
-    n_deg         = int((tgt_deltas < -0.01).sum())
+    for budget in budgets:
+        if budget == "all":
+            k            = len(target_classes)
+            k_targets    = target_classes
+            budget_label = "all"
+        else:
+            k         = min(int(budget), len(target_classes))
+            k_targets = target_classes[:k]
+            budget_label = str(k)
 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        pct_oracle = float(np.clip(
-            np.where(np.abs(oracle_deltas) > 0.01,
-                     tgt_deltas / oracle_deltas, 1.0),
-            -1, 2
-        ).mean()) * 100
+        print(f"\n  Budget={budget_label} ({k} classes): {k_targets}")
+
+        # Incremental fine-tuning for this budget
+        inc_ckpt_k = os.path.join(ckpt_dir, f"incremental_{name}_k{budget_label}.pt")
+        inc_tmp, _, _, _ = incremental_ft(
+            config, base_ckpt, k_targets, device, verbose=False
+        )
+        shutil.copy(inc_tmp, inc_ckpt_k)
+        calibrate_thresholds(config, inc_ckpt_k, device, verbose=False)
+
+        f1_i, macro_i, wtd_i = eval_ckpt(inc_ckpt_k)
+
+        # Print per-class table
+        print_combined_table(
+            class_names, f1_b, f1_i, f1_o,
+            set(k_targets),
+            macro_b, macro_i, macro_o,
+            wtd_b,   wtd_i,   wtd_o,
+            k
+        )
+
+        # Targeted metrics
+        tgt_idx       = [class_names.index(c) for c in k_targets if c in class_names]
+        tgt_deltas    = f1_i[tgt_idx] - f1_b[tgt_idx]
+        oracle_deltas = f1_o[tgt_idx] - f1_b[tgt_idx]
+        n_imp = int((tgt_deltas >  0.01).sum())
+        n_deg = int((tgt_deltas < -0.01).sum())
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            pct_oracle = float(np.clip(
+                np.where(np.abs(oracle_deltas) > 0.01,
+                         tgt_deltas / oracle_deltas, 1.0),
+                -1, 2
+            ).mean()) * 100
+
+        print(f"  → Budget={budget_label} | Baseline={macro_b:.4f} | "
+              f"Proposed={macro_i:.4f} ({macro_i-macro_b:+.4f}) | "
+              f"Oracle={macro_o:.4f} ({macro_o-macro_b:+.4f}) | "
+              f"%Oracle={pct_oracle:.1f}%")
+
+        budget_results.append({
+            "budget"        : budget_label,
+            "n_target"      : k,
+            "target_classes": k_targets,
+            "proposed"      : {"macro_f1": float(macro_i), "weighted_f1": float(wtd_i),
+                               "delta": float(macro_i - macro_b),
+                               "n_improved": n_imp, "n_degraded": n_deg,
+                               "mean_delta": float(tgt_deltas.mean()),
+                               "median_delta": float(np.median(tgt_deltas))},
+            "pct_oracle"    : pct_oracle,
+            "per_class"     : {
+                class_names[i]: {
+                    "baseline": float(f1_b[i]), "proposed": float(f1_i[i]),
+                    "oracle"  : float(f1_o[i]), "targeted": class_names[i] in k_targets
+                } for i in range(len(class_names))
+            }
+        })
 
     result = {
-        "name"          : name,
-        "known_sensors" : known,
-        "new_sensor"    : config["sensors"]["new_sensor"],
-        "n_base"        : len(known),
-        "n_target"      : len(target_classes),
-        "target_classes": target_classes,
-        "baseline"      : {"macro_f1": float(macro_b), "weighted_f1": float(wtd_b)},
-        "proposed"      : {"macro_f1": float(macro_i), "weighted_f1": float(wtd_i),
-                           "delta"       : float(macro_i - macro_b),
-                           "n_improved"  : n_imp,
-                           "n_degraded"  : int((tgt_deltas < -0.01).sum()),
-                           "mean_delta"  : float(tgt_deltas.mean()),
-                           "median_delta": float(np.median(tgt_deltas))},
-        "oracle"        : {"macro_f1": float(macro_o), "weighted_f1": float(wtd_o),
-                           "delta"   : float(macro_o - macro_b)},
-        "pct_oracle"    : pct_oracle,
-        "per_class"     : {
-            class_names[i]: {
-                "baseline": float(f1_b[i]), "proposed": float(f1_i[i]),
-                "oracle"  : float(f1_o[i]), "targeted": class_names[i] in target_classes
-            } for i in range(len(class_names))
-        },
-        "benefit_ranked"  : [(n, float(s)) for n, s in benefit_ranked],
+        "name"           : name,
+        "known_sensors"  : known,
+        "new_sensor"     : config["sensors"]["new_sensor"],
+        "n_base"         : len(known),
+        "baseline"       : {"macro_f1": float(macro_b), "weighted_f1": float(wtd_b)},
+        "oracle"         : {"macro_f1": float(macro_o), "weighted_f1": float(wtd_o),
+                            "delta"   : float(macro_o - macro_b)},
+        "budget_results" : budget_results,
+        "benefit_ranked" : [(n, float(s)) for n, s in benefit_ranked],
         "confusion_scores": [
-            {k: v for k, v in cs.items() if k != "class_id"}
+            {k2: v for k2, v in cs.items() if k2 != "class_id"}
             for cs in confusion_scores
         ]
     }
-
-    print(f"\n  → Baseline={macro_b:.4f} | Proposed={macro_i:.4f} "
-          f"({macro_i-macro_b:+.4f}) | Oracle={macro_o:.4f} "
-          f"({macro_o-macro_b:+.4f}) | %Oracle={pct_oracle:.1f}%")
-
     return result
 
 
@@ -237,38 +259,49 @@ def run_sensor_config(base_config, sensor_config, device, log_dir):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def print_summary(results, n_base):
-    print(f"\n{'='*105}")
-    print(f"  n_base={n_base} Ablation Summary  ({len(results)} configs)")
-    print(f"{'='*105}")
-    print(f"  {'Config':<30} {'Base':<30} {'New':>8} {'#Tgt':>5} "
-          f"{'Base':>8} {'Prop':>8} {'Orac':>8} "
-          f"{'ΔProp':>7} {'ΔOrac':>7} {'%Orac':>7}")
-    print(f"  {'─'*103}")
-
+    # Collect all budgets used
+    all_budgets = []
     for r in results:
-        base_str = "+".join(SHORT[s] for s in r["known_sensors"])
-        new_str  = SHORT[r["new_sensor"][0]]
-        print(f"  {r['name']:<30} {base_str:<30} {new_str:>8} "
-              f"{r['n_target']:>5} "
-              f"{r['baseline']['macro_f1']:>8.4f} "
-              f"{r['proposed']['macro_f1']:>8.4f} "
-              f"{r['oracle']['macro_f1']:>8.4f} "
-              f"{r['proposed']['delta']:>+7.4f} "
-              f"{r['oracle']['delta']:>+7.4f} "
-              f"{r['pct_oracle']:>6.1f}%")
+        for br in r.get("budget_results", []):
+            if br["budget"] not in all_budgets:
+                all_budgets.append(br["budget"])
 
-    # Aggregate stats
-    deltas    = [r["proposed"]["delta"] for r in results]
-    pct_oracs = [r["pct_oracle"] for r in results]
-    print(f"\n  Aggregate (n={len(results)}):")
-    print(f"    ΔProp — mean={np.mean(deltas):+.4f}  "
-          f"median={np.median(deltas):+.4f}  "
-          f"min={np.min(deltas):+.4f}  max={np.max(deltas):+.4f}")
-    print(f"    %Oracle — mean={np.mean(pct_oracs):.1f}%  "
-          f"median={np.median(pct_oracs):.1f}%")
-    print(f"    Configs improved:  {sum(1 for d in deltas if d > 0.005)}/{len(results)}")
-    print(f"    Configs degraded:  {sum(1 for d in deltas if d < -0.005)}/{len(results)}")
-    print(f"{'='*105}")
+    for budget in all_budgets:
+        print(f"\n{'='*105}")
+        print(f"  n_base={n_base} | Budget={budget}  ({len(results)} configs)")
+        print(f"{'='*105}")
+        print(f"  {'Config':<30} {'Base':<25} {'New':>8} {'#Tgt':>5} "
+              f"{'Base':>8} {'Prop':>8} {'Orac':>8} "
+              f"{'ΔProp':>7} {'ΔOrac':>7} {'%Orac':>7}")
+        print(f"  {'─'*103}")
+
+        deltas, pct_oracs = [], []
+        for r in results:
+            br = next((b for b in r.get("budget_results", [])
+                       if b["budget"] == budget), None)
+            if br is None:
+                continue
+            base_str = "+".join(SHORT[s] for s in r["known_sensors"])
+            new_str  = SHORT[r["new_sensor"][0]]
+            delta    = br["proposed"]["delta"]
+            pct      = br["pct_oracle"]
+            deltas.append(delta)
+            pct_oracs.append(pct)
+            print(f"  {r['name']:<30} {base_str:<25} {new_str:>8} "
+                  f"{br['n_target']:>5} "
+                  f"{r['baseline']['macro_f1']:>8.4f} "
+                  f"{br['proposed']['macro_f1']:>8.4f} "
+                  f"{r['oracle']['macro_f1']:>8.4f} "
+                  f"{delta:>+7.4f} "
+                  f"{r['oracle']['delta']:>+7.4f} "
+                  f"{pct:>6.1f}%")
+
+        if deltas:
+            print(f"\n  Aggregate: ΔProp mean={np.mean(deltas):+.4f} "
+                  f"median={np.median(deltas):+.4f} "
+                  f"improved={sum(1 for d in deltas if d>0.005)}/{len(deltas)} "
+                  f"%Oracle mean={np.mean(pct_oracs):.1f}%")
+        print(f"{'='*105}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,6 +313,8 @@ def main():
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--n-base", type=str, required=True,
                         help="Number of base sensors: 1, 2, 3, 4, or 'all'")
+    parser.add_argument("--budgets", type=str, default="5,10,15,all",
+                        help="Comma-separated budgets e.g. '5,10,15,all'")
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 
@@ -290,6 +325,9 @@ def main():
     log_dir  = base_config["output"]["checkpoint_dir"]
     os.makedirs(log_dir, exist_ok=True)
 
+    # Parse budgets
+    raw_budgets = [b.strip() for b in args.budgets.split(",")]
+
     # Determine which n_base values to run
     if args.n_base == "all":
         n_base_list = [1, 2, 3, 4]
@@ -299,9 +337,10 @@ def main():
     # Start logging
     log_dir_logs = base_config["output"]["log_dir"]
     os.makedirs(log_dir_logs, exist_ok=True)
+    budget_tag = args.budgets.replace(",", "_")
     log_path = os.path.join(
         log_dir_logs,
-        f"ablation_sensor_n{args.n_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        f"ablation_sensor_n{args.n_base}_b{budget_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
     tee = Tee(log_path)
     sys.stdout = tee
@@ -319,7 +358,8 @@ def main():
         set_results = []
         for i, sc in enumerate(configs):
             print(f"\n[{i+1}/{len(configs)}] ", end="")
-            r = run_sensor_config(base_config, sc, device, log_dir)
+            r = run_sensor_config(base_config, sc, device, log_dir,
+                                  budgets=raw_budgets)
             set_results.append(r)
             all_results.append(r)
 
