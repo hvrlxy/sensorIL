@@ -393,21 +393,19 @@ def train_translator(
     G = translator.generator
     D = translator.discriminator
 
-    # D is used as a frozen feature extractor for feature matching loss only
-    # No adversarial training — avoids D collapse and simplifies training
-    for p in D.parameters():
-        p.requires_grad = False
-    D.eval()
-
     opt_G = torch.optim.Adam(G.parameters(), lr=lr_g, betas=(0.5, 0.999))
+    opt_D = torch.optim.Adam(D.parameters(), lr=lr_d, betas=(0.5, 0.999))
+
     sched_G = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt_G, T_max=epochs, eta_min=lr_g*0.1)
+    sched_D = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt_D, T_max=epochs, eta_min=lr_d*0.1)
 
     X_tr_t = torch.from_numpy(X_train.astype(np.float32))
     X_vl_t = torch.from_numpy(X_val.astype(np.float32))
 
     best_val, best_ckpt, patience = float("inf"), None, 0
-    history = {"epoch": [], "g_loss": [], "val_l1": []}
+    history = {"epoch": [], "g_loss": [], "d_loss": [], "val_l1": []}
 
     # Visualization samples — use provided or fall back to first val windows
     if viz_samples is None:
@@ -419,7 +417,7 @@ def train_translator(
     for epoch in range(1, epochs + 1):
         G.train(); D.train()
         perm = torch.randperm(N)
-        g_loss_sum, nb = 0.0, 0
+        g_loss_sum, d_loss_sum, nb = 0.0, 0.0, 0
 
         for i in range(0, N, batch_size):
             batch = X_tr_t[perm[i:i+batch_size]].to(DEVICE)  # (B, T, S, C)
@@ -437,30 +435,51 @@ def train_translator(
             X_known_norm = torch.stack(X_known_norm_list, dim=2)  # (B,T,n_k,C)
             X_target_norm, _, _ = normalize_sample(X_target)      # (B, T, C)
 
-            # ── Train Generator: L1 + feature matching ────────────────────
-            fake = G(X_known_norm)
-
-            # L1 on normalized signal
-            g_l1 = F.l1_loss(fake, X_target_norm)
-
-            # Feature matching — match D's intermediate features
-            # D is frozen so its features are fixed perceptual representations
+            # ── Train Discriminator ───────────────────────────────────────
             with torch.no_grad():
-                _, real_feats = D(X_known_norm, X_target_norm)
-            _, fake_feats = D(X_known_norm, fake)
-            g_feat = sum(F.l1_loss(ff, rf.detach())
-                         for ff, rf in zip(fake_feats, real_feats))
+                fake = G(X_known_norm)
 
-            g_loss = lambda_l1 * g_l1 + 2.0 * g_feat
+            # Add small noise to D inputs to prevent immediate saturation
+            noise_std = max(0.05 * (1 - epoch / 50), 0.01)
+            real_noisy = X_target_norm + torch.randn_like(X_target_norm) * noise_std
+            fake_noisy = fake.detach() + torch.randn_like(fake) * noise_std
 
-            opt_G.zero_grad(); g_loss.backward()
-            torch.nn.utils.clip_grad_norm_(G.parameters(), 1.0)
-            opt_G.step()
+            real_score, _ = D(X_known_norm, real_noisy)
+            fake_score, _ = D(X_known_norm, fake_noisy)
+
+            d_real = F.mse_loss(real_score, torch.ones_like(real_score) * 0.9)  # label smoothing
+            d_fake = F.mse_loss(fake_score, torch.zeros_like(fake_score))
+            d_loss = (d_real + d_fake) * 0.5
+
+            opt_D.zero_grad(); d_loss.backward()
+            torch.nn.utils.clip_grad_norm_(D.parameters(), 1.0)
+            opt_D.step()
+
+            # ── Train Generator (2 steps per D step for stability) ────────
+            for _ in range(2):
+                fake = G(X_known_norm)
+                fake_score, fake_feats = D(X_known_norm, fake)
+                with torch.no_grad():
+                    _, real_feats = D(X_known_norm, X_target_norm)
+
+                g_adv  = F.mse_loss(fake_score, torch.ones_like(fake_score))
+                g_feat = sum(F.l1_loss(ff, rf.detach())
+                             for ff, rf in zip(fake_feats, real_feats))
+                g_l1   = F.l1_loss(fake, X_target_norm)
+
+                # Balanced weights: adversarial drives sharpness,
+                # L1 drives accuracy, feature matching stabilizes
+                g_loss = g_adv + lambda_l1 * g_l1 + 2.0 * g_feat
+
+                opt_G.zero_grad(); g_loss.backward()
+                torch.nn.utils.clip_grad_norm_(G.parameters(), 1.0)
+                opt_G.step()
 
             g_loss_sum += g_loss.item()
+            d_loss_sum += d_loss.item()
             nb += 1
 
-        sched_G.step()
+        sched_G.step(); sched_D.step()
 
         # Validation — L1 on normalized signals
         G.eval()
@@ -484,10 +503,12 @@ def train_translator(
         if epoch % 10 == 0 or epoch == 1:
             print(f"  [Translator] epoch={epoch:3d}  "
                   f"G={g_loss_sum/max(1,nb):.4f}  "
+                  f"D={d_loss_sum/max(1,nb):.4f}  "
                   f"val_l1={val_l1:.4f}", flush=True)
 
         history["epoch"].append(epoch)
         history["g_loss"].append(g_loss_sum / max(1, nb))
+        history["d_loss"].append(d_loss_sum / max(1, nb))
         history["val_l1"].append(val_l1)
 
         # Save loss curve every epoch
@@ -508,6 +529,11 @@ def train_translator(
             best_val  = val_l1
             best_ckpt = {k: v.cpu().clone() for k,v in translator.state_dict().items()}
 
+        # Only early stop if D loss collapses to ~0 (discriminator dominance)
+        d_avg = d_loss_sum / max(1, nb)
+        if d_avg < 0.01 and epoch > 5:
+            print(f"  [Translator] D collapsed at epoch {epoch} — stopping")
+            break
 
     if best_ckpt:
         translator.load_state_dict(best_ckpt)
@@ -531,8 +557,9 @@ def _save_loss_curve(history, out_path):
     import matplotlib.pyplot as plt
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     ep = history["epoch"]
-    ax1.plot(ep, history["g_loss"], label="G loss (L1 + feat)", color="#2196F3")
-    ax1.set_xlabel("Epoch"); ax1.set_title("Generator Loss")
+    ax1.plot(ep, history["g_loss"], label="G loss", color="#2196F3")
+    ax1.plot(ep, history["d_loss"], label="D loss", color="#E53935")
+    ax1.set_xlabel("Epoch"); ax1.set_title("GAN Losses")
     ax1.legend(); ax1.grid(alpha=0.3)
     ax2.plot(ep, history["val_l1"], label="Val L1", color="#4CAF50")
     ax2.set_xlabel("Epoch"); ax2.set_title("Validation L1 (normalized)")
@@ -583,27 +610,13 @@ def _visualize_translator(G, X_samples, known_indices, target_idx,
             ax = axes[i, c]
             ax.plot(t, real_np[i, :, c], color=axis_colors[c],
                     lw=1.4, alpha=0.9, label='Real')
-            lo_r, hi_r = real_np[i,:,c].min(), real_np[i,:,c].max()
-            pad_r = max((hi_r - lo_r) * 0.15, 0.03)
-            ax.set_ylim(lo_r - pad_r, hi_r + pad_r)
-            ax.tick_params(axis='y', labelsize=6, labelcolor=axis_colors[c])
-
-            # Generated on right axis — own scale for shape comparison
-            ax2 = ax.twinx()
-            ax2.plot(t, fake_np[i, :, c], color='black',
-                     lw=1.2, alpha=0.6, linestyle='--', label='Generated')
-            lo_f, hi_f = fake_np[i,:,c].min(), fake_np[i,:,c].max()
-            pad_f = max((hi_f - lo_f) * 0.15, 0.03)
-            ax2.set_ylim(lo_f - pad_f, hi_f + pad_f)
-            ax2.tick_params(axis='y', labelsize=5.5, labelcolor='black')
-
+            ax.plot(t, fake_np[i, :, c], color='black',
+                    lw=1.2, alpha=0.6, linestyle='--', label='Generated')
             if i == 0:
                 ax.set_title(f"Axis {axis_names[c]}", fontsize=9)
-                if c == C - 1:
-                    lines = [plt.Line2D([0],[0], color=axis_colors[c], lw=1.4, label='Real (←)'),
-                             plt.Line2D([0],[0], color='black', lw=1.2, ls='--', label='Gen (→)')]
-                    ax2.legend(handles=lines, fontsize=7, loc='upper right')
+                ax.legend(fontsize=7)
             ax.set_xlim(0, T-1)
+            ax.tick_params(labelsize=6)
 
     fig.suptitle(f"Normalized: Real vs Generated  {title}", fontsize=10)
     plt.tight_layout()
@@ -753,16 +766,9 @@ if __name__ == "__main__":
     val_path = data_dir / train_path.name.replace("train", "val")
     print(f"Loading: {train_path}")
     X_tr  = np.load(str(train_path)).astype(np.float32)
-    if val_path.exists():
-        X_val = np.load(str(val_path)).astype(np.float32)
-        if len(X_val) > 10_000: X_val = X_val[:10_000]
-    else:
-        # No separate val file — carve out last 10% of train (not first, to avoid
-        # temporal leakage if windows are ordered by time)
-        n_val = min(10_000, int(len(X_tr) * 0.1))
-        X_val = X_tr[-n_val:].copy()
-        X_tr  = X_tr[:-n_val]
-        print(f"  No val file found — carved out last {n_val} windows as val")
+    X_val = np.load(str(val_path)).astype(np.float32) \
+            if val_path.exists() else X_tr[:10_000]
+    if len(X_val) > 10_000: X_val = X_val[:10_000]
     print(f"  Train: {X_tr.shape}  Val: {X_val.shape}  (N, T, S, C)")
 
     if len(X_tr) > args.max_train:
@@ -777,8 +783,8 @@ if __name__ == "__main__":
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).parent))
         try:
-            from helpers import create_dataset_file_split
-            from config_loader import cfg
+            from scripts.misc.helpers import create_dataset_file_split
+            from scripts.misc.config_loader import cfg
             _, np_val, _, label_dict = create_dataset_file_split(
                 args.lab_data_dir, [args.lab_participant], cfg.SEED)
             X_lab, y_lab = np_val[0], np_val[1]   # (N, T, 8, C)

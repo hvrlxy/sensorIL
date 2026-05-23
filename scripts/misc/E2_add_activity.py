@@ -27,14 +27,14 @@ import numpy as np
 import torch
 from datetime import datetime
 
-from config_loader import cfg
-from logger import RunLogger
-from hitl_simulation import (
+from scripts.misc.config_loader import cfg
+from scripts.misc.logger import RunLogger
+from scripts.misc.hitl_simulation import (
     simulate_cooccurrence_confirmation,
     should_retrain_for_fn,
 )
-from helpers import create_dataset_file_split
-from helpers_hitl import (
+from scripts.misc.helpers import create_dataset_file_split
+from scripts.misc.helpers_hitl import (
     make_binary_labels, build_gated_head_from_features,
     train_head_fast, evaluate_head_fast,
     find_optimal_threshold_fast,
@@ -62,7 +62,7 @@ def load_state(state_path: str) -> dict:
     state["heads"] = load_heads_from_state(state, fusion, cfg=cfg)
     print(f"  Loaded {len(state['heads'])} heads  D={D}")
     if state.get("sensor_incremented") and state.get("projector_path"):
-        from projector import load_projector
+        from scripts.misc.projector import load_projector
         hp = cfg.PROJECTOR_HPARAMS
         state["projector"] = load_projector(
             state["projector_path"], hidden_dim=hp.get("hidden_dim", 256)
@@ -195,7 +195,7 @@ def run_add_activity(new_activity, state,
                      feat_cache, np_train_raw, np_val_raw, np_test_raw,
                      label_dict, logger: RunLogger, encoders=None,
                      timestamp=None):
-    from helpers_hitl import (
+    from scripts.misc.helpers_hitl import (
         make_binary_labels, build_gated_head_from_features,
         train_head_fast, evaluate_head_fast,
         find_optimal_threshold_fast, FeatureCache,
@@ -246,7 +246,7 @@ def run_add_activity(new_activity, state,
     # ── Bootstrap projector on first activity after sensor add ─────────────────
     _streams_expanded = (len(full_streams) > len(initial_streams))
     if _streams_expanded and not sensor_incremented:
-        from projector import (build_projector, train_projector_bootstrap,
+        from scripts.misc.projector import (build_projector, train_projector_bootstrap,
                                train_encoder_on_unlabeled, save_projector,
                                train_projection_head, extract_mae_features)
 
@@ -461,7 +461,7 @@ def run_add_activity(new_activity, state,
                 stream_indices=list(range(n_streams_out)),
                 batch_size=hp.get("batch_size", 256),
             )
-            from helpers_hitl import FeatureCache
+            from scripts.misc.helpers_hitl import FeatureCache
             feat_cache = FeatureCache(Z_mae_tr_full, Z_mae_vl_full, Z_mae_te_full)
     
             # Save retrained head weights
@@ -505,7 +505,7 @@ def run_add_activity(new_activity, state,
 
     # ── Step 2b: Update encoder + retrain old heads on synthetic data ──────────
     if sensor_incremented:
-        from projector import (train_projector_bootstrap, train_encoder_on_unlabeled,
+        from scripts.misc.projector import (train_projector_bootstrap, train_encoder_on_unlabeled,
                                save_projector, train_projection_head,
                                extract_mae_features)
         hp    = cfg.PROJECTOR_HPARAMS
@@ -912,7 +912,7 @@ if __name__ == "__main__":
     full_cols_m    = [cfg.FULL_DATASET_STREAMS.index(s) for s in full_streams_m]
 
     if projector is not None and hasattr(projector, "proj_head"):
-        from projector import extract_mae_features
+        from scripts.misc.projector import extract_mae_features
         print("Extracting MAE features for feat_cache...")
         Z_train = extract_mae_features(
             projector, np_train_raw[0][:, :, full_cols_m, :],

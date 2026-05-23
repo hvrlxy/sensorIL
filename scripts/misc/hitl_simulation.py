@@ -32,7 +32,7 @@ import random
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from config_loader import Config
+    from scripts.misc.config_loader import Config
 
 
 # ─────────────────────────────────────────────────────────────────────────────

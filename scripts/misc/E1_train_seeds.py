@@ -29,10 +29,10 @@ import numpy as np
 import torch
 from datetime import datetime
 
-from config_loader import cfg
-from logger import RunLogger
-from helpers import create_dataset_file_split
-from helpers_hitl import (
+from scripts.misc.config_loader import cfg
+from scripts.misc.logger import RunLogger
+from scripts.misc.helpers import create_dataset_file_split
+from scripts.misc.helpers_hitl import (
     build_gated_head_from_features,
     train_head_fast, evaluate_head_fast,
     find_optimal_threshold_fast,
@@ -75,7 +75,7 @@ if __name__ == "__main__":
 
     # ── Load encoder(s) ──────────────────────────────────────────────────────
     logger.event("INFO", "Loading encoder(s)...")
-    from encoder import load_encoders_from_cfg, extract_all_features
+    from scripts.misc.encoder import load_encoders_from_cfg, extract_all_features
     encoders = load_encoders_from_cfg(cfg)
 
     # ── Precompute encoder features ───────────────────────────────────────────

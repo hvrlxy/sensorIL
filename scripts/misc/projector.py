@@ -972,26 +972,26 @@ def evaluate_with_missing_sensors(heads, thresholds, projector, X_test_raw,
                                    embed_dim=None, simclr_encoders=None,
                                    stream_to_encoder=None, cooccurrence_graph=None,
                                    T=100, C=3, batch_size=256, translator=None):
-    from helpers_hitl import evaluate_all_heads_fast
+    from scripts.misc.helpers_hitl import evaluate_all_heads_fast
     mi  = [all_stream_names.index(s) for s in missing_sensors if s in all_stream_names]
     ki  = [i for i in range(n_streams_out) if i not in mi]
     X_k = X_test_raw[:, :, ki, :]
 
     if translator is not None and simclr_encoders is not None:
-        # Reconstruct missing stream with translator, then encode all streams
-        # with SimCLR (per-stream, independent — no embedding space mismatch)
-        from signal_translator import impute_with_translator
-        from encoder import extract_all_features
+        from scripts.misc.signal_translator import impute_with_translator
+        from scripts.misc.encoder import extract_all_features
         X_full = impute_with_translator(translator, X_k, ki, n_streams_out,
-                                         T, C, batch_size)
+                                         T, C, batch_size,
+                                         encoders=simclr_encoders,
+                                         stream_names=all_stream_names,
+                                         stream_to_encoder=stream_to_encoder)
         Z = extract_all_features(
             X_full, simclr_encoders, stream_to_encoder,
             stream_names=all_stream_names,
             batch_size=batch_size,
         )
     elif translator is not None:
-        # Translator but no SimCLR — fall back to MAE on reconstructed signal
-        from signal_translator import impute_with_translator
+        from scripts.misc.signal_translator import impute_with_translator
         X_full = impute_with_translator(translator, X_k, ki, n_streams_out,
                                          T, C, batch_size)
         Z = extract_mae_features(projector, X_full,
@@ -1017,4 +1017,3 @@ def generate_synthetic_embeddings(*args, **kwargs):
 
 def generate_synthetic_full(*args, **kwargs):
     raise NotImplementedError("generate_synthetic_full() is no longer supported.")
-

@@ -72,24 +72,24 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
-from config_loader import cfg
-from logger import RunLogger
-from helpers import create_dataset_file_split
-from helpers_hitl import (
+from scripts.misc.config_loader import cfg
+from scripts.misc.logger import RunLogger
+from scripts.misc.helpers import create_dataset_file_split
+from scripts.misc.helpers_hitl import (
     FeatureCache, load_heads_from_state,
     evaluate_all_heads_fast, evaluate_head_fast,
     find_optimal_threshold_fast, build_gated_head_from_features,
     train_head_fast, ReplayBuffer, save_head_weights,
     make_multilabel_binary,
 )
-from encoder import load_encoders_from_cfg, extract_all_features
-from projector import (
+from scripts.misc.encoder import load_encoders_from_cfg, extract_all_features
+from scripts.misc.projector import (
     build_projector, load_projector, save_projector,
     train_encoder_on_unlabeled, measure_encoder_val_loss,
     evaluate_with_missing_sensors,
     train_projection_head, extract_mae_features,
 )
-from E2_add_activity import run_add_activity, save_state
+from scripts.misc.E2_add_activity import run_add_activity, save_state
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -247,15 +247,11 @@ def run_encoder_fraction_sweep(
         f"N_train={N_total}  N_val={len(X_unlabeled_val)}"
     )
     print(f"\n{'='*60}")
-    print(f"ENCODER DATA-FRACTION SWEEP  (raw signal space)")
-    print(f"  Fractions  : {fractions}")
-    print(f"  Scenarios  : {len(scenarios)} missing-sensor patterns")
-    print(f"  Train pool : {N_total} windows  shape={X_unlabeled_train.shape[1:]}")
-    print(f"  Val (fixed): {len(X_unlabeled_val)} windows  ← same across all fractions")
-    print(f"  Streams before: {streams_before}")
-    print(f"  Streams after : {streams_after}")
-    for i, sc in enumerate(scenarios):
-        print(f"    [{i:02d}] missing={sc}")
+    print(f"SENSOR INCREMENT  (SimCLR + translator)")
+    print(f"  Streams before: {list(streams_before)}")
+    print(f"  Streams after : {list(streams_after)}")
+    print(f"  FL train pool : {N_total} windows")
+    print(f"  Missing-sensor scenarios: {len(scenarios)}")
     print(f"{'='*60}")
 
     hp  = cfg.PROJECTOR_HPARAMS
@@ -271,7 +267,7 @@ def run_encoder_fraction_sweep(
           f"{len(X_unlabeled_val)} val windows")
 
     print(f"  Extracting SimCLR features...")
-    from encoder import extract_all_features as _simclr_feat
+    from scripts.misc.encoder import extract_all_features as _simclr_feat
     bs = hp.get("batch_size", 256)
 
     def _simclr_pad(X_raw, col_indices, stream_names_subset):
@@ -301,7 +297,7 @@ def run_encoder_fraction_sweep(
     enc_val_loss = 0.0
 
     # ── Retrain old-activity heads ────────────────────────────────────────
-    from helpers_hitl import evaluate_head_fast
+    from scripts.misc.helpers_hitl import evaluate_head_fast
     cooc_graph = cfg._dataset["cooccurrence_graph"]
     fusion     = state["fusion"]
     heads      = state["heads"]
@@ -311,7 +307,7 @@ def run_encoder_fraction_sweep(
     sweep_heads      = {}
     sweep_thresholds = {}
 
-    print(f"  Retraining pre-increment heads on MAE features "
+    print(f"  Retraining pre-increment heads on SimCLR features "
           f"({len(pre_increment)} activities)...")
     for activity in pre_increment:
         if activity not in label_dict:
@@ -387,12 +383,70 @@ def run_encoder_fraction_sweep(
         sweep_heads[(activity, fusion)]      = head
         sweep_thresholds[(activity, fusion)] = thresh
 
-    # ── Evaluate ─────────────────────────────────────────────────────────
-    full_metrics = evaluate_all_heads_fast(
-        sweep_heads, Z_mae_test_full, np_test_raw[1],
-        label_dict, sweep_thresholds, fusion,
+    # ── Oracle heads: ALL activities trained on full 3-stream features ───────
+    # This is the true upper bound: train on 3, eval on 3
+    oracle_heads      = {}
+    oracle_thresholds = {}
+    print(f"  Training oracle heads on 3-stream features (all {len(label_dict)} activities)...")
+    for activity in label_dict:
+        act_idx  = label_dict[activity]
+        y_tr_bin = (np_train_raw[1] == act_idx).astype(np.int32)
+        y_vl_bin = (np_val_raw[1]   == act_idx).astype(np.int32)
+        y_te_bin = (np_test_raw[1]  == act_idx).astype(np.int32)
+        n_pos = int(y_tr_bin.sum())
+        if n_pos == 0 or y_vl_bin.sum() == 0:
+            continue
+        max_neg = min(int((y_tr_bin==0).sum()), 10 * n_pos)
+        pos_idx = np.where(y_tr_bin == 1)[0]
+        neg_idx = np.where(y_tr_bin == 0)[0]
+        if len(neg_idx) > max_neg:
+            neg_idx = np.random.default_rng(cfg.SEED).choice(
+                neg_idx, size=max_neg, replace=False)
+        keep_idx = np.concatenate([pos_idx, neg_idx])
+        Z_tr = Z_mae_train_full[keep_idx]
+        y_tr = y_tr_bin[keep_idx]
+        hint = [1.0] * n_streams_out
+        head = build_gated_head_from_features(hint, mae_D, fusion=fusion)
+        save_path = os.path.join(working_dir,
+            f"{timestamp}_oracle_{activity.replace(' ','_')}_{fusion}.pt")
+        head = train_head_fast(head, Z_tr, y_tr, Z_mae_val_full, y_vl_bin, save_path,
+            epochs=cfg.SEED_HEAD_EPOCHS, lr=cfg.LEARNING_RATE,
+            focal_gamma=cfg.FOCAL_GAMMA, max_class_weight=cfg.MAX_CLASS_WEIGHT)
+        thresh = find_optimal_threshold_fast(head, Z_mae_val_full, y_vl_bin,
+            t_min=cfg.THRESHOLD_MIN, t_max=cfg.THRESHOLD_MAX,
+            fallback=cfg.THRESHOLD_FALLBACK)
+        oracle_heads[(activity, fusion)]      = head
+        oracle_thresholds[(activity, fusion)] = thresh
+
+    oracle_metrics = evaluate_all_heads_fast(
+        oracle_heads, Z_mae_test_full, np_test_raw[1],
+        label_dict, oracle_thresholds, fusion,
         cooccurrence_graph=cooc_graph,
-    )
+    ) if oracle_heads else {}
+
+    # ── Evaluate sweep heads (pre-increment on old, new on full) ─────────
+    # Pre-increment heads: trained on old streams (thigh zeroed) → eval same way
+    # New-activity heads: trained on full streams → eval on full streams
+    old_heads      = {k: v for k, v in sweep_heads.items()
+                      if k[0] in pre_increment}
+    new_heads      = {k: v for k, v in sweep_heads.items()
+                      if k[0] not in pre_increment}
+    old_thresholds = {k: v for k, v in sweep_thresholds.items()
+                      if k[0] in pre_increment}
+    new_thresholds = {k: v for k, v in sweep_thresholds.items()
+                      if k[0] not in pre_increment}
+
+    old_metrics = evaluate_all_heads_fast(
+        old_heads, Z_mae_test_old, np_test_raw[1],
+        label_dict, old_thresholds, fusion,
+        cooccurrence_graph=cooc_graph,
+    ) if old_heads else {}
+    new_metrics = evaluate_all_heads_fast(
+        new_heads, Z_mae_test_full, np_test_raw[1],
+        label_dict, new_thresholds, fusion,
+        cooccurrence_graph=cooc_graph,
+    ) if new_heads else {}
+    full_metrics = {**old_metrics, **new_metrics}
 
     missing_metrics = {}
     if state.get("translator") is not None:
@@ -415,27 +469,31 @@ def run_encoder_fraction_sweep(
     sweep_results[1.0] = {
         "fraction": 1.0,
         "full_metrics":        full_metrics,
+        "oracle_metrics":      oracle_metrics,
         "missing_metrics":     missing_metrics,
         "sweep_heads":         sweep_heads,
         "sweep_thresholds":    sweep_thresholds,
+        "oracle_heads":        oracle_heads,
+        "oracle_thresholds":   oracle_thresholds,
         "encoder_val_loss":    0.0,
         "elapsed_s":           round(elapsed, 1),
     }
 
     # Print summary
-    print(f"\n  {'Activity':<45} {'1-stream (E1)':>14} {'3-stream':>10} {'Δ':>7}")
-    print(f"  {'-'*80}")
+    print(f"\n  {'Activity':<45} {'E1 (2-stream)':>14} {'Oracle (3-stream)':>18} {'Sweep (mixed)':>14} {'Δ oracle':>9}")
+    print(f"  {'-'*104}")
     for act in (seed_metrics_e1 or {}):
         e1  = (seed_metrics_e1 or {}).get(act, {}).get("f1", float("nan"))
-        f3  = full_metrics.get(act, {}).get("f1", float("nan"))
-        d   = f"{f3-e1:+.4f}" if f3==f3 and e1==e1 else "   nan"
-        print(f"  {act:<45} {e1:>14.4f} {f3:>10.4f} {d:>7}")
+        ora = oracle_metrics.get(act, {}).get("f1", float("nan"))
+        sw  = full_metrics.get(act, {}).get("f1", float("nan"))
+        d   = f"{ora-e1:+.4f}" if ora==ora and e1==e1 else "   nan"
+        print(f"  {act:<45} {e1:>14.4f} {ora:>18.4f} {sw:>14.4f} {d:>9}")
 
     logger.event("INFO", f"Sensor increment: enc_val=0.0  elapsed={elapsed:.1f}s")
 
     # ── Train translator ──────────────────────────────────────────────────
     try:
-        from signal_translator import train_translator
+        from scripts.misc.signal_translator import train_translator
         trans_save = os.path.join(
             working_dir, f"{timestamp}_translator.pt")
         T_t = hp.get("T", 100)
@@ -452,6 +510,9 @@ def run_encoder_fraction_sweep(
             epochs=hp.get("translator_epochs", 30),
             batch_size=hp.get("batch_size", 512),
             early_stopping_patience=50,
+            encoders=encoders,
+            stream_names=list(streams_before),
+            stream_to_encoder=cfg.STREAM_TO_ENCODER,
         )
         state["translator"]      = translator
         state["translator_path"] = trans_save
@@ -464,7 +525,7 @@ def run_encoder_fraction_sweep(
 
 
 def _measure_encoder_val_loss(projector, X_val: np.ndarray) -> float:
-    from projector import measure_encoder_val_loss
+    from scripts.misc.projector import measure_encoder_val_loss
     return measure_encoder_val_loss(projector, X_val)
 
 
@@ -663,7 +724,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
     # MAE features replace SimCLR as the feature extractor for binary heads.
     # This ensures E1 and post-increment use the same feature space so Δ is
     # a clean comparison of "1-stream MAE" → "2-stream MAE".
-    print("\nExtracting E1 features using SimCLR (no MAE-1 training)...")
+    print("\nExtracting E1 features using SimCLR...")
     if encoders is None or len(encoders) == 0:
         raise RuntimeError("No SimCLR encoders loaded — cannot extract E1 features.")
 
@@ -674,7 +735,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
         cache_suffix="_" + "_".join(initial_sensors),
     ) if ul_dir_init else (None, None)
 
-    from encoder import extract_all_features as _extract_simclr
+    from scripts.misc.encoder import extract_all_features as _extract_simclr
     init_cols = [cfg.FULL_DATASET_STREAMS.index(s) for s in initial_sensors]
     n_init    = len(initial_sensors)
 
@@ -723,7 +784,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
         n_heads  = 4
         while n_heads > 1 and d_model % n_heads != 0:
             n_heads -= 1
-        from projector import CrossMaskedTransformer, StreamProjectionHead
+        from scripts.misc.projector import CrossMaskedTransformer, StreamProjectionHead
         mae1 = CrossMaskedTransformer(
             n_streams_total=n_init, T=T_raw, C=C_raw,
             patch_size=hp.get("patch_size", 10),
@@ -739,7 +800,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
     # ── Phase 1: Seed training ─────────────────────────────────────────────────
     if resume_e1_path:
         print(f"\nResuming from E1 state: {resume_e1_path}")
-        from E2_add_activity import load_state
+        from scripts.misc.E2_add_activity import load_state
         state = load_state(resume_e1_path)
         state["heads"] = load_heads_from_state(state, cfg.WORKING_DIR)
         logger.event("INFO", f"Resumed E1 from {resume_e1_path}")
@@ -872,7 +933,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
 
                 # Select best fraction by average F1 gain across all activities
                 def _avg_delta(res):
-                    metrics = res.get("full_sensor_metrics", {})
+                    metrics = res.get("oracle_metrics", res.get("full_metrics", {}))
                     e1      = seed_metrics_e1 or {}
                     deltas  = []
                     for act, m in metrics.items():
@@ -897,8 +958,8 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                                      for s in current_streams]
                     print(f"  Rebuilding feat_cache with SimCLR features "
                           f"({current_streams})...")
-                    from encoder import extract_all_features as _simclr_fc
-                    S_fc = len(cfg.FULL_DATASET_STREAMS)
+                    from scripts.misc.encoder import extract_all_features as _simclr_fc
+                    n_cur = len(current_streams)
 
                     def _simclr_pad_fc(X_raw):
                         Z = _simclr_fc(
@@ -907,9 +968,9 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                             batch_size=cfg.BATCH_SIZE,
                         )
                         N, _, Dz = Z.shape
-                        Z_out = np.zeros((N, S_fc, Dz), dtype=np.float32)
-                        for li, gi in enumerate(after_cols_fc):
-                            Z_out[:, gi, :] = Z[:, li, :]
+                        Z_out = np.zeros((N, n_cur, Dz), dtype=np.float32)
+                        for li in range(n_cur):
+                            Z_out[:, li, :] = Z[:, li, :]
                         return Z_out
 
                     Z_mae2_tr = _simclr_pad_fc(np_train_raw[0])
@@ -925,7 +986,7 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                     # embeddings (initial streams only).  Full 3-stream val
                     # embeddings have different score distributions — re-tune
                     # so heads don't produce all-zeros at t1.
-                    print(f"  Re-tuning thresholds on full MAE-2 val features...")
+                    print(f"  Re-tuning thresholds on full SimCLR val features...")
                     for (act, f), head in state["heads"].items():
                         if f != cfg.FUSION or act not in label_dict:
                             continue
@@ -940,10 +1001,10 @@ def run_experiment(exp_config: dict, resume_e1_path: str | None = None):
                             fallback=cfg.THRESHOLD_FALLBACK,
                         )
                         state["thresholds"][(act, f)] = thresh
-                    print(f"  Thresholds re-tuned on full MAE-2 val features.")
+                    print(f"  Thresholds re-tuned on full SimCLR val features.")
                     logger.event("INFO",
                         "Injected best encoder (100% fraction) — bootstrap will be skipped."
-                        f"  feat_cache rebuilt with MAE-2 features D={D}")
+                        f"  feat_cache rebuilt with SimCLR features D={D}")
             else:
                 logger.warn(
                     f"Step {step['t']}: sensor increment ('{new_sensor}') but no "

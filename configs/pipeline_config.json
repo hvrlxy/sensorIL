@@ -1,0 +1,37 @@
+{
+    "experiment_name": "active_sensor_increment",
+    "data": {
+        "labeled_dir": "/mnt/storage/hitl_experiments/paaws_tuned/DS_10",
+        "unlabeled_dir": "/mnt/storage/hitl_experiments/paaws_fl_tuned/DS_10"
+    },
+    "model": {
+        "encoder_path": "/home/hle5/sensorIL/models/20260320-130313_simclr.pt"
+    },
+    "sensors": {
+        "known_sensors": [
+            "LeftWrist",
+            "RightAnkle"
+        ],
+        "new_sensor": [
+            "RightThigh"
+        ]
+    },
+    "finetune": {
+        "epochs": 100,
+        "batch_size": 64,
+        "lr": 0.001,
+        "weight_decay": 0.0001,
+        "few_shot_samples_per_class": 50,
+        "val_split": 0.2
+    },
+    "active_learning": {
+        "top_k_confused": 15,
+        "pseudo_label_threshold": 0.7,
+        "benefit_threshold": 0.0,
+        "n_clusters": 40
+    },
+    "output": {
+        "checkpoint_dir": "/home/hle5/sensorIL/checkpoints",
+        "log_dir": "/home/hle5/sensorIL/logs"
+    }
+}

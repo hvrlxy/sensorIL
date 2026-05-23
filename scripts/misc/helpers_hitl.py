@@ -365,7 +365,7 @@ def predict_with_projection(model, Z_full: np.ndarray,
     probs : (N,) sigmoid probabilities
     """
     if projector is not None:
-        from projector import project_features
+        from scripts.misc.projector import project_features
         Z_head = project_features(projector, Z_full, n_streams_out,
                                   embed_dim, batch_size=batch_size)
     else:

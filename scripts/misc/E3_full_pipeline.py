@@ -41,15 +41,15 @@ import numpy as np
 import torch
 from datetime import datetime
 
-from config_loader import cfg
-from logger import RunLogger
-from helpers import create_dataset_file_split
-from helpers_hitl import (
+from scripts.misc.config_loader import cfg
+from scripts.misc.logger import RunLogger
+from scripts.misc.helpers import create_dataset_file_split
+from scripts.misc.helpers_hitl import (
     FeatureCache, load_heads_from_state,
     evaluate_all_heads_fast, make_multilabel_binary,
     find_optimal_threshold_fast, evaluate_head_fast,
 )
-from E2_add_activity import run_add_activity, load_state, save_state
+from scripts.misc.E2_add_activity import run_add_activity, load_state, save_state
 
 DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -60,7 +60,7 @@ DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def run_e1(np_train_raw, np_val_raw, np_test_raw, label_dict,
            feat_cache, D, logger, timestamp):
-    from helpers_hitl import (
+    from scripts.misc.helpers_hitl import (
         build_gated_head_from_features, train_head_fast,
         find_optimal_threshold_fast, evaluate_head_fast,
         ReplayBuffer, save_head_weights,
@@ -211,7 +211,7 @@ if __name__ == "__main__":
 
     # ── Load encoder + extract features ───────────────────────────────────────
     print("\nLoading encoder(s)...")
-    from encoder import load_encoders_from_cfg, extract_all_features
+    from scripts.misc.encoder import load_encoders_from_cfg, extract_all_features
     encoders = load_encoders_from_cfg(cfg)
 
     # Always extract full streams — E1 will slice to initial streams

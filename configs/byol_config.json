@@ -1,0 +1,96 @@
+{
+    "experiment_name": "byol_sensor_increment",
+    "data": {
+        "labeled_dir": "/mnt/storage/hitl_experiments/paaws_tuned/DS_10",
+        "unlabeled_dir": "/mnt/storage/hitl_experiments/paaws_fl_tuned/DS_10",
+        "window_size": 100,
+        "n_axes": 3
+    },
+    "sensors": {
+        "lab_sensor_order": [
+            "LeftAnkle",
+            "LeftThigh",
+            "LeftWaist",
+            "LeftWrist",
+            "RightAnkle",
+            "RightThigh",
+            "RightWaist",
+            "RightWrist"
+        ],
+        "fl_sensor_order": [
+            "LeftWrist",
+            "RightAnkle",
+            "RightThigh",
+            "RightWaist",
+            "RightWrist"
+        ],
+        "experiments": {
+            "2to1": {
+                "known_sensors": [
+                    "LeftWrist",
+                    "RightAnkle"
+                ],
+                "new_sensor": [
+                    "RightThigh"
+                ]
+            },
+            "1to1": {
+                "known_sensors": [
+                    "LeftWrist"
+                ],
+                "new_sensor": [
+                    "RightThigh"
+                ]
+            }
+        }
+    },
+    "model": {
+        "input_channels": 3,
+        "kernel_size": 5,
+        "n_sensors_max": 8,
+        "d_model": 512,
+        "n_heads": 8,
+        "n_layers": 4,
+        "dropout": 0.1,
+        "embedding_dim": 256,
+        "predictor_hidden_dim": 512,
+        "regression_hidden_dim": 512
+    },
+    "pretrain": {
+        "epochs": 50,
+        "batch_size": 256,
+        "lr": 0.0001,
+        "weight_decay": 0.0001,
+        "ema_decay": 0.996,
+        "supcon_temperature": 0.07,
+        "supcon_lambda": 1.0,
+        "supcon_batch_size": 128,
+        "regression_lambda": 1.0,
+        "cross_lambda": 1.0,
+        "cross_k": 5,
+        "index_rebuild_freq": 5
+    },
+    "finetune": {
+        "epochs": 50,
+        "batch_size": 32,
+        "lr": 0.0001,
+        "weight_decay": 0.0001,
+        "few_shot_samples_per_class": 50,
+        "val_split": 0.2,
+        "encoder_lr": 1e-05,
+        "shift_alpha": 1.0,
+        "shift_beta": 0.5
+    },
+    "output": {
+        "checkpoint_dir": "/home/hle5/sensorIL/checkpoints",
+        "log_dir": "/home/hle5/sensorIL/logs"
+    },
+    "augmentation": {
+        "jitter_std": 0.05,
+        "scale_range": [
+            0.8,
+            1.2
+        ],
+        "crop_ratio": 0.8
+    }
+}
