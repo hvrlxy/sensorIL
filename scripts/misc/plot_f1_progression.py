@@ -29,7 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-from config_loader import cfg
+from scripts.misc.config_loader import cfg
 
 
 def load_history(path=None):

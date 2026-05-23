@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from config_loader import cfg
+from scripts.misc.config_loader import cfg
 
 
 def check(condition, message, fix=None):

@@ -332,7 +332,7 @@ def generate_synthetic_embeddings(
 
     Never generates raw signals — operates entirely in embedding space.
     """
-    from encoder import extract_all_features
+    from scripts.misc.encoder import extract_all_features
 
     # Step 1: encode known streams with SimCLR
     known_stream_names = [stream_names[i] for i in known_indices]
@@ -390,7 +390,7 @@ def retrain_old_heads_on_synthetic(
     cfg=None, T=100, C=3,
 ):
     """Identical to projector.py version."""
-    from helpers_hitl import (build_gated_head_from_features, train_head_fast,
+    from scripts.misc.helpers_hitl import (build_gated_head_from_features, train_head_fast,
                                find_optimal_threshold_fast, evaluate_head_fast)
 
     print(f"\n  [Synthetic retrain] Generating synthetic embeddings (train/val/test)...")
@@ -583,7 +583,7 @@ def train_projector_bootstrap(
     Bootstrap on labeled windows at sensor increment time.
     Extracts embeddings from raw signals first, then trains JEPA.
     """
-    from encoder import extract_all_features
+    from scripts.misc.encoder import extract_all_features
 
     assert simclr_encoders is not None, "Bootstrap requires simclr_encoders"
 
@@ -609,7 +609,7 @@ def evaluate_with_missing_sensors(
     n_streams_out, embed_dim, simclr_encoders, stream_to_encoder,
     cooccurrence_graph=None, T=100, C=3, batch_size=256,
 ):
-    from helpers_hitl import evaluate_all_heads_fast
+    from scripts.misc.helpers_hitl import evaluate_all_heads_fast
     mi  = [all_stream_names.index(s) for s in missing_sensors if s in all_stream_names]
     ki  = [i for i in range(n_streams_out) if i not in mi]
     Xm  = X_test_raw[:, :, ki, :]   # known streams only

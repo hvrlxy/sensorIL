@@ -35,7 +35,7 @@ import numpy as np
 import torch
 
 if TYPE_CHECKING:
-    from config_loader import Config
+    from scripts.misc.config_loader import Config
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -133,7 +133,7 @@ class SimCLRPyTorchEncoder(StreamEncoder):
                 f"Check encoder_paths in paths.json."
             )
 
-        from simclr_models_pt import SimCLRModel
+        from scripts.misc.simclr_models_pt import SimCLRModel
         full_model = SimCLRModel(in_channels=in_channels)
         full_model.load_state_dict(
             torch.load(model_path, map_location=DEVICE)
