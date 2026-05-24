@@ -46,27 +46,37 @@ def load_results(results_dir, n_base_list):
 def extract_pairs(all_data):
     """
     For each targeted class in each config, extract:
-      - actual ΔF1
+      - actual ΔF1 (from "all" budget or last budget)
       - confusion signal (1 - F1_base)
       - discriminability
-      - product score
+      - benefit score components
     """
     records = []
 
     for config in all_data:
         name         = config["name"]
-        per_class    = config["per_class"]
         benefit_list = config.get("benefit_ranked", [])
         confusion    = config.get("confusion_scores", [])
 
-        # Build lookup: class → discriminability
-        # benefit_ranked = [(class, product_score), ...]
-        # confusion_scores = [{class, f1, ...}, ...]
-        conf_lookup  = {c["class"]: c for c in confusion}
+        # Use "all" budget results if available, else last budget
+        budget_results = config.get("budget_results", [])
+        if not budget_results:
+            continue
 
-        # Reconstruct discriminability from product and confusion signal
-        # product = (1-F1) * discrim  →  discrim = product / (1-F1)
-        for cls_name, product_score in benefit_list:
+        # Prefer "all" budget
+        br = next((b for b in budget_results if b["budget"] == "all"),
+                  budget_results[-1])
+        per_class = br.get("per_class", {})
+        if not per_class:
+            continue
+
+        # Build benefit score lookup
+        benefit_lookup = {name_: score for name_, score in benefit_list}
+
+        # Build confusion f1 lookup
+        conf_lookup = {c["class"]: c for c in confusion}
+
+        for cls_name, benefit_score in benefit_list:
             if cls_name not in per_class:
                 continue
 
@@ -75,94 +85,122 @@ def extract_pairs(all_data):
             if not targeted:
                 continue
 
-            delta_f1 = pc["proposed"] - pc["baseline"]
+            delta_f1       = pc["proposed"] - pc["baseline"]   # proposed gain
+            delta_f1_oracle = pc["oracle"]   - pc["baseline"]   # oracle gain (true potential)
             f1_base  = pc["baseline"]
             conf_sig = 1.0 - f1_base
 
-            # Reconstruct discriminability
-            if conf_sig > 0.01:
-                discrim = product_score / conf_sig
-            else:
-                discrim = 0.0
+            # Get val F1 from confusion scores (used for benefit estimation)
+            val_f1   = conf_lookup.get(cls_name, {}).get("f1", f1_base)
+            conf_sig_val = 1.0 - val_f1
+
+            # Reconstruct discriminability from additive formula:
+            # benefit = conf_sig_val + discrim → discrim = benefit - conf_sig_val
+            discrim = max(0.0, benefit_score - conf_sig_val)
 
             records.append({
-                "config"      : name,
-                "class"       : cls_name,
-                "delta_f1"    : delta_f1,
-                "conf_signal" : conf_sig,
-                "discrim"     : discrim,
-                "product"     : product_score,
-                "weighted_sum": 0.5 * conf_sig + 0.5 * discrim,
-                "f1_base"     : f1_base
+                "config"        : name,
+                "n_base"        : config.get("n_base", 0),
+                "class"         : cls_name,
+                "delta_f1"      : delta_f1,         # proposed ΔF1
+                "delta_f1_oracle": delta_f1_oracle,  # oracle ΔF1 (true potential)
+                "conf_signal"   : conf_sig_val,
+                "discrim"       : discrim,
+                "benefit"       : benefit_score,
+                "product"       : conf_sig_val * discrim,
+                "weighted_sum"  : 0.5 * conf_sig_val + 0.5 * discrim,
+                "f1_base"       : f1_base
             })
 
     return records
 
 
 def compute_correlations(records):
-    """Compute Spearman correlation of each formulation with actual ΔF1."""
-    delta_f1    = np.array([r["delta_f1"]     for r in records])
-    product     = np.array([r["product"]      for r in records])
-    conf_only   = np.array([r["conf_signal"]  for r in records])
-    discrim_only= np.array([r["discrim"]      for r in records])
-    weighted    = np.array([r["weighted_sum"] for r in records])
+    """
+    Compute Spearman correlation of each formulation with:
+      - delta_f1_oracle: true potential gain (validates benefit score selection)
+      - delta_f1:        proposed gain (end-to-end performance)
+    """
+    delta_f1        = np.array([r["delta_f1"]         for r in records])
+    delta_f1_oracle = np.array([r["delta_f1_oracle"]  for r in records])
+    additive        = np.array([r["benefit"]           for r in records])
+    product         = np.array([r["product"]           for r in records])
+    conf_only       = np.array([r["conf_signal"]       for r in records])
+    discrim_only    = np.array([r["discrim"]           for r in records])
+    weighted        = np.array([r["weighted_sum"]      for r in records])
+
+    formulas = [
+        ("Additive (1-F1) + discrim",  additive),
+        ("Product  (1-F1) × discrim",  product),
+        ("Confusion only  (1-F1)",     conf_only),
+        ("Discrim only",               discrim_only),
+        ("Weighted sum  0.5+0.5",      weighted),
+    ]
 
     results = {}
-    for name, scores in [
-        ("Product  (1-F1) × discrim", product),
-        ("Confusion only  (1-F1)",    conf_only),
-        ("Discrim only",              discrim_only),
-        ("Weighted sum  0.5+0.5",     weighted),
-    ]:
-        rho, pval = spearmanr(scores, delta_f1)
-        results[name] = {"rho": rho, "pval": pval}
+    for fname, scores in formulas:
+        rho_oracle, pval_oracle = spearmanr(scores, delta_f1_oracle)
+        rho_prop,   pval_prop   = spearmanr(scores, delta_f1)
+        results[fname] = {
+            "rho_oracle": rho_oracle, "pval_oracle": pval_oracle,
+            "rho_prop"  : rho_prop,   "pval_prop"  : pval_prop
+        }
 
-    return results, delta_f1, product, conf_only, discrim_only, weighted
+    return results, delta_f1, delta_f1_oracle, product, conf_only, discrim_only, weighted
 
 
-def print_report(records, correlations, delta_f1):
+def print_report(records, correlations, delta_f1, delta_f1_oracle):
     n = len(records)
-    print(f"\n{'='*65}")
+    print(f"\n{'='*85}")
     print(f"  Benefit Score Validation  (n={n} targeted class instances)")
-    print(f"{'='*65}")
-    print(f"\n  Spearman correlation with actual ΔF1:")
+    print(f"{'='*85}")
+
+    def interp(rho):
+        if abs(rho) > 0.5: return "strong"
+        elif abs(rho) > 0.3: return "moderate"
+        elif abs(rho) > 0.1: return "weak"
+        else: return "none"
+
+    def sig(pval):
+        return "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
+
+    print(f"\n  Correlation with Oracle ΔF1 (true potential — validates selection):")
     print(f"  {'Formula':<35} {'ρ':>8} {'p-value':>12} {'Interpretation'}")
-    print(f"  {'─'*63}")
-
+    print(f"  {'─'*70}")
     for name, r in correlations.items():
-        rho, pval = r["rho"], r["pval"]
-        if abs(rho) > 0.5:
-            interp = "strong"
-        elif abs(rho) > 0.3:
-            interp = "moderate"
-        elif abs(rho) > 0.1:
-            interp = "weak"
-        else:
-            interp = "none"
-        sig = "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
-        print(f"  {name:<35} {rho:>8.3f} {pval:>12.4f}  {interp} {sig}")
+        rho, pval = r["rho_oracle"], r["pval_oracle"]
+        print(f"  {name:<35} {rho:>8.3f} {pval:>12.4f}  {interp(rho)} {sig(pval)}")
 
-    print(f"\n  ΔF1 distribution across targeted classes:")
-    print(f"    Mean:   {delta_f1.mean():+.3f}")
-    print(f"    Median: {np.median(delta_f1):+.3f}")
-    print(f"    Improved (>0.01):  {(delta_f1 > 0.01).sum()}/{n} "
-          f"({(delta_f1 > 0.01).mean()*100:.1f}%)")
-    print(f"    Degraded (<-0.01): {(delta_f1 < -0.01).sum()}/{n} "
-          f"({(delta_f1 < -0.01).mean()*100:.1f}%)")
-    print(f"{'='*65}")
+    print(f"\n  Correlation with Proposed ΔF1 (end-to-end performance):")
+    print(f"  {'Formula':<35} {'ρ':>8} {'p-value':>12} {'Interpretation'}")
+    print(f"  {'─'*70}")
+    for name, r in correlations.items():
+        rho, pval = r["rho_prop"], r["pval_prop"]
+        print(f"  {name:<35} {rho:>8.3f} {pval:>12.4f}  {interp(rho)} {sig(pval)}")
+
+    print(f"\n  ΔF1 distributions:")
+    for label, arr in [("Oracle (true potential)", delta_f1_oracle),
+                        ("Proposed (end-to-end)", delta_f1)]:
+        print(f"    {label}: mean={arr.mean():+.3f}  median={np.median(arr):+.3f}  "
+              f"improved={(arr>0.01).mean()*100:.0f}%  "
+              f"degraded={(arr<-0.01).mean()*100:.0f}%")
+    print(f"{'='*85}")
 
     # Per n_base breakdown
-    by_nbase = defaultdict(list)
+    by_nbase = defaultdict(lambda: {"prop": [], "oracle": []})
     for r in records:
-        n_base = len(r["config"].split("__")[0].split("_"))
-        by_nbase[n_base].append(r["delta_f1"])
+        nb = r.get("n_base", len(r["config"].split("__")[0].split("_")))
+        by_nbase[nb]["prop"].append(r["delta_f1"])
+        by_nbase[nb]["oracle"].append(r["delta_f1_oracle"])
 
-    print(f"\n  ΔF1 by number of base sensors:")
+    print(f"\n  By number of base sensors:")
+    print(f"  {'n_base':>8} {'Oracle mean':>13} {'Prop mean':>11} {'Imp%':>6} {'n':>6}")
+    print(f"  {'─'*50}")
     for nb in sorted(by_nbase.keys()):
-        vals = np.array(by_nbase[nb])
-        print(f"    n_base={nb}: mean={vals.mean():+.3f}  "
-              f"improved={( vals>0.01).mean()*100:.0f}%  "
-              f"n={len(vals)}")
+        op = np.array(by_nbase[nb]["oracle"])
+        pp = np.array(by_nbase[nb]["prop"])
+        print(f"  {nb:>8} {op.mean():>+13.3f} {pp.mean():>+11.3f} "
+              f"{(pp>0.01).mean()*100:>5.0f}% {len(pp):>6}")
 
 
 def main():
@@ -183,21 +221,31 @@ def main():
     records = extract_pairs(all_data)
     print(f"Targeted class instances: {len(records)}")
 
-    correlations, delta_f1, *_ = compute_correlations(records)
-    print_report(records, correlations, delta_f1)
+    correlations, delta_f1, delta_f1_oracle, *_ = compute_correlations(records)
+    print_report(records, correlations, delta_f1, delta_f1_oracle)
 
     # Save
     out = args.output or os.path.join(args.results_dir, "benefit_score_analysis.json")
     with open(out, "w") as f:
         json.dump({
             "n_records"   : len(records),
-            "correlations": {k: {"rho": v["rho"], "pval": v["pval"]}
+            "correlations": {k: {"rho_oracle": v["rho_oracle"],
+                                  "pval_oracle": v["pval_oracle"],
+                                  "rho_prop"  : v["rho_prop"],
+                                  "pval_prop" : v["pval_prop"]}
                              for k, v in correlations.items()},
             "delta_f1_stats": {
                 "mean"    : float(delta_f1.mean()),
                 "median"  : float(np.median(delta_f1)),
                 "improved": int((delta_f1 > 0.01).sum()),
                 "degraded": int((delta_f1 < -0.01).sum()),
+                "n"       : len(records)
+            },
+            "delta_f1_oracle_stats": {
+                "mean"    : float(delta_f1_oracle.mean()),
+                "median"  : float(np.median(delta_f1_oracle)),
+                "improved": int((delta_f1_oracle > 0.01).sum()),
+                "degraded": int((delta_f1_oracle < -0.01).sum()),
                 "n"       : len(records)
             },
             "records"     : records

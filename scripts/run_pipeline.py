@@ -112,7 +112,7 @@ def main():
         )
 
         # Step 3: Benefit estimation
-        benefit_ranked, target_classes = estimate_benefit(
+        benefit_ranked, target_classes, all_candidates = estimate_benefit(
             config, base_ckpt, confusion_scores, device
         )
 

@@ -125,10 +125,11 @@ def run_sensor_config(base_config, sensor_config, device, log_dir, budgets=None)
 
     # ── Confusion + benefit ───────────────────────────────────────────────
     confusion_scores, _  = detect_confusion(config, base_ckpt, device)
-    benefit_ranked, target_classes = estimate_benefit(
+    benefit_ranked, target_classes, all_candidates = estimate_benefit(
         config, base_ckpt, confusion_scores, device
     )
-    print(f"  Target classes ({len(target_classes)}): {target_classes}")
+    print(f"  Elbow classes ({len(target_classes)}): {target_classes}")
+    print(f"  All candidates ({len(all_candidates)}): {[n for n,_ in all_candidates]}")
 
     # ── Oracle (train once) ──────────────────────────────────────────────
     oracle_ckpt = os.path.join(ckpt_dir, f"oracle_{name}.pt")
@@ -168,14 +169,21 @@ def run_sensor_config(base_config, sensor_config, device, log_dir, budgets=None)
         budgets = ["all"]
     budget_results = []
 
+    # Build FL index once — reused across all budgets
+    from incremental_ft import build_fl_index as _build_fl_index
+    print("\nBuilding FL index (once for all budgets)...")
+    _encoder  = load_simclr_encoder(config["model"]["encoder_path"], device)
+    fl_index  = _build_fl_index(config, base_ckpt, _encoder, device)
+
     for budget in budgets:
         if budget == "all":
             k            = len(target_classes)
             k_targets    = target_classes
             budget_label = "all"
         else:
-            k         = min(int(budget), len(target_classes))
-            k_targets = target_classes[:k]
+            # Fixed-K: slice from full candidate list, not elbow-limited list
+            k         = min(int(budget), len(all_candidates))
+            k_targets = [n for n, _ in all_candidates[:k]]
             budget_label = str(k)
 
         print(f"\n  Budget={budget_label} ({k} classes): {k_targets}")
@@ -183,7 +191,8 @@ def run_sensor_config(base_config, sensor_config, device, log_dir, budgets=None)
         # Incremental fine-tuning for this budget
         inc_ckpt_k = os.path.join(ckpt_dir, f"incremental_{name}_k{budget_label}.pt")
         inc_tmp, _, _, _ = incremental_ft(
-            config, base_ckpt, k_targets, device, verbose=False
+            config, base_ckpt, k_targets, device, verbose=False,
+            fl_index=fl_index
         )
         shutil.copy(inc_tmp, inc_ckpt_k)
         calibrate_thresholds(config, inc_ckpt_k, device, verbose=False)

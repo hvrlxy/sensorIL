@@ -17,11 +17,11 @@
         ]
     },
     "finetune": {
-        "epochs": 100,
+        "epochs": 50,
         "batch_size": 64,
         "lr": 0.001,
         "weight_decay": 0.0001,
-        "few_shot_samples_per_class": 50,
+        "few_shot_samples_per_class": 60,
         "val_split": 0.2
     },
     "active_learning": {

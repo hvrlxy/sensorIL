@@ -1,0 +1,1636 @@
+Logging to: /home/hle5/sensorIL/logs/ablation_sensor_n1_b5_10_15_all_20260524_134252.log
+Started: 2026-05-24T13:42:52.746115
+
+======================================================================
+  Running n_base=1: 20 configs
+======================================================================
+
+[1/20] 
+──────────────────────────────────────────────────────────────────────
+  LW__plus_RW
+  Base: ['LeftWrist'] → New: ['RightWrist']
+──────────────────────────────────────────────────────────────────────
+  [cached] base checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+============================================================
+Step 2: Detecting confused classes
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+  81/450 windows had no classifier fire above threshold
+
+Base model val — Macro F1: 0.2347 | Weighted F1: 0.2183
+
+Class                                                  F1  Confusion  Confused with
+──────────────────────────────────────────────────────────────────────────────────────────
+Lying_On_Back_Lab                                   0.000         12  
+Lying_On_Right_Side_Lab                             0.000         12  Sitting_With_Movement(1)
+Machine_Leg_Press_Lab                               0.000          7  
+Sit_Writing_Lab                                     0.000         12  Standing_With_Movement(2), Standing_Still(1), Vacuuming(1)
+Stand_Conversation_Lab                              0.000         12  Sitting_Still(3), Sitting_With_Movement(3), Walking(3)
+Stand_Shelf_Load_Lab                                0.000          5  Walking(3)
+Standing_Still                                      0.000         12  Standing_With_Movement(1)
+Sweeping                                            0.000          7  Standing_Still(1), Vacuuming(1)
+Treadmill_2mph_Lab                                  0.000          3  Standing_With_Movement(2), Vacuuming(1)
+Treadmill_3mph_Briefcase_Lab                        0.000          7  
+Treadmill_3mph_Conversation_Lab                     0.000          9  
+Treadmill_3mph_Drink_Lab                            0.000         12  Treadmill_3mph_Phone_Lab(1)
+Treadmill_3mph_Free_Walk_Lab                        0.000         12  
+Treadmill_3mph_Hands_Pockets_Lab                    0.000          0  
+Treadmill_3mph_Phone_Lab                            0.000          2  
+Treadmill_4mph_Lab                                  0.000          2  Stand_Shelf_Load_Lab(1), Standing_Still(1), Standing_With_Movement(1)
+Treadmill_5_5mph_Lab                                0.000          0  
+Walking_Up_Stairs                                   0.000          1  
+Standing_With_Movement                              0.035         11  Standing_Still(2), Sitting_With_Movement(2), Sitting_Still(1)
+Walking                                             0.144          0  
+Folding_Clothes                                     0.154          5  Standing_With_Movement(2), Walking(1), Vacuuming(1)
+Lying_On_Left_Side_Lab                              0.154         11  Standing_Still(1)
+Sit_Recline_Talk_Lab                                0.154         11  Standing_With_Movement(1)
+Sit_Recline_Web_Browse_Lab                          0.154          9  
+Walking_Down_Stairs                                 0.154          2  Standing_Still(1), Standing_With_Movement(1)
+Sitting_With_Movement                               0.182          5  Lying_On_Right_Side_Lab(1), Washing_Dishes_Lab(1)
+Vacuuming                                           0.235          3  Washing_Dishes_Lab(1)
+Stand_Shelf_Unload_Lab                              0.286          2  Walking(1)
+Machine_Chest_Press_Lab                             0.333          1  
+Sitting_Still                                       0.349          1  
+Organizing_Shelf_Cabinet                            0.400          5  Walking(2)
+Chopping_Food_Lab                                   0.500          7  Washing_Dishes_Lab(1)
+Playing_Frisbee                                     0.588          6  Vacuuming(1), Standing_Still(1)
+Sit_Typing_Lab                                      0.588          6  
+Push_Up_Lab                                         0.750          2  
+Washing_Dishes_Lab                                  0.800          0  
+Arm_Curls_Lab                                       0.857          0  
+Lying_On_Stomach_Lab                                0.909          2  Sitting_Still(1), Sitting_With_Movement(1)
+Ab_Crunches_Lab                                     0.941          1  Standing_With_Movement(1)
+Stationary_Biking_300_Lab                           0.957          1  Sitting_Still(1), Sitting_With_Movement(1)
+
+All 40 classes ranked by F1 (ascending)
+
+============================================================
+Step 3: Estimating benefit of new sensor
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+Encoding FL data with known sensors (pseudo-labeling)...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+Encoding FL data with new sensor only (discriminability)...
+[UnlabeledFLDataset] 437247 windows | sensors=['RightWrist']
+Pseudo-labeling FL data...
+  Ab_Crunches_Lab                               pseudo_labeled=723
+  Arm_Curls_Lab                                 pseudo_labeled=11
+  Chopping_Food_Lab                             pseudo_labeled=1635
+  Folding_Clothes                               pseudo_labeled=1117
+  Lying_On_Back_Lab                             pseudo_labeled=0
+  Lying_On_Left_Side_Lab                        pseudo_labeled=1092
+  Lying_On_Right_Side_Lab                       pseudo_labeled=114
+  Lying_On_Stomach_Lab                          pseudo_labeled=1445
+  Machine_Chest_Press_Lab                       pseudo_labeled=3
+  Machine_Leg_Press_Lab                         pseudo_labeled=75
+  Organizing_Shelf_Cabinet                      pseudo_labeled=547
+  Playing_Frisbee                               pseudo_labeled=244
+  Push_Up_Lab                                   pseudo_labeled=169
+  Sit_Recline_Talk_Lab                          pseudo_labeled=1
+  Sit_Recline_Web_Browse_Lab                    pseudo_labeled=1945
+  Sit_Typing_Lab                                pseudo_labeled=900
+  Sit_Writing_Lab                               pseudo_labeled=1
+  Sitting_Still                                 pseudo_labeled=79406
+  Sitting_With_Movement                         pseudo_labeled=21776
+  Stand_Conversation_Lab                        pseudo_labeled=923
+  Stand_Shelf_Load_Lab                          pseudo_labeled=88
+  Stand_Shelf_Unload_Lab                        pseudo_labeled=390
+  Standing_Still                                pseudo_labeled=16045
+  Standing_With_Movement                        pseudo_labeled=15809
+  Stationary_Biking_300_Lab                     pseudo_labeled=412
+  Sweeping                                      pseudo_labeled=65
+  Treadmill_2mph_Lab                            pseudo_labeled=93
+  Treadmill_3mph_Briefcase_Lab                  pseudo_labeled=213
+  Treadmill_3mph_Conversation_Lab               pseudo_labeled=5
+  Treadmill_3mph_Drink_Lab                      pseudo_labeled=0
+  Treadmill_3mph_Free_Walk_Lab                  pseudo_labeled=0
+  Treadmill_3mph_Hands_Pockets_Lab              pseudo_labeled=227
+  Treadmill_3mph_Phone_Lab                      pseudo_labeled=182
+  Treadmill_4mph_Lab                            pseudo_labeled=2542
+  Treadmill_5_5mph_Lab                          pseudo_labeled=20
+  Vacuuming                                     pseudo_labeled=4660
+  Walking                                       pseudo_labeled=22368
+  Walking_Down_Stairs                           pseudo_labeled=896
+  Walking_Up_Stairs                             pseudo_labeled=754
+  Washing_Dishes_Lab                            pseudo_labeled=23584
+
+Class                                             1-F1   Direct    Oppos      α  Discrim  Benefit
+───────────────────────────────────────────────────────────────────────────────────────────────
+Treadmill_4mph_Lab                               1.000   0.3644   0.0702   1.00   0.3644   0.3644
+Walking_Down_Stairs                              0.846   0.3193   0.0076   1.00   0.3193   0.2702
+Stand_Conversation_Lab                           1.000   0.2176   0.2354   1.00   0.2176   0.2176
+Standing_With_Movement                           0.965   0.2046   0.2287   1.00   0.2046   0.1974
+Stand_Shelf_Unload_Lab                           0.714   0.1781   0.0000   1.00   0.1781   0.1272
+Lying_On_Right_Side_Lab                          1.000   0.1236   0.0000   1.00   0.1236   0.1236
+Lying_On_Left_Side_Lab                           0.846   0.1300   0.0000   1.00   0.1300   0.1100
+Stand_Shelf_Load_Lab                             1.000   0.0902   0.0000   1.00   0.0902   0.0902
+Sitting_With_Movement                            0.818   0.1088   0.0148   1.00   0.1088   0.0890
+Treadmill_2mph_Lab                               1.000   0.0696   0.0035   1.00   0.0696   0.0696
+Folding_Clothes                                  0.846   0.0783   0.1046   1.00   0.0783   0.0663
+Organizing_Shelf_Cabinet                         0.600   0.1073   0.0000   1.00   0.1073   0.0644
+Vacuuming                                        0.765   0.0361   0.0000   1.00   0.0361   0.0276
+Chopping_Food_Lab                                0.500   0.0273   0.0000   1.00   0.0273   0.0136
+Sweeping                                         1.000   0.0124   0.0171   1.00   0.0124   0.0124
+Lying_On_Stomach_Lab                             0.091   0.1352   0.1235   1.00   0.1352   0.0123
+Sit_Writing_Lab                                  1.000   0.0000   0.0094   0.10   0.0085   0.0085
+Standing_Still                                   1.000   0.0076   0.0000   1.00   0.0076   0.0076
+Playing_Frisbee                                  0.412   0.0181   0.0171   1.00   0.0181   0.0075
+Stationary_Biking_300_Lab                        0.043   0.0648   0.1235   1.00   0.0648   0.0028
+Ab_Crunches_Lab                                  0.059   0.0035   0.0000   1.00   0.0035   0.0002
+Lying_On_Back_Lab                                1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Machine_Leg_Press_Lab                            1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Briefcase_Lab                     1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Conversation_Lab                  1.000   0.0000   0.0000   0.50   0.0000   0.0000
+Treadmill_3mph_Drink_Lab                         1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Free_Walk_Lab                     1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Hands_Pockets_Lab                 1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Phone_Lab                         1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_5_5mph_Lab                             1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Walking_Up_Stairs                                1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Walking                                          0.856   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Recline_Talk_Lab                             0.846   0.0000   0.0000   0.10   0.0000   0.0000
+Sit_Recline_Web_Browse_Lab                       0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Machine_Chest_Press_Lab                          0.667   0.0000   0.0000   0.30   0.0000   0.0000
+Sitting_Still                                    0.651   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Typing_Lab                                   0.412   0.0000   0.0000   1.00   0.0000   0.0000
+Push_Up_Lab                                      0.250   0.0000   0.0000   1.00   0.0000   0.0000
+Washing_Dishes_Lab                               0.200   0.0000   0.0000   1.00   0.0000   0.0000
+Arm_Curls_Lab                                    0.143   0.0000   0.0000   1.00   0.0000   0.0000
+
+Elbow at rank 5 (score=0.1272)
+Classes selected for re-annotation (5): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+  Target classes (5): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+  [cached] oracle checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+  Budget=5 (5 classes): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (5): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWrist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 240 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+[SensorDataset:val] 60 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+====================================================================================================
+  Per-class F1 comparison  (5 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.585     0.585     0.635   +0.000   +0.050       
+  Arm_Curls_Lab                                     0.977     0.977     0.933   +0.000   -0.043       
+  Chopping_Food_Lab                                 0.422     0.422     0.803   +0.000   +0.381       
+  Folding_Clothes                                   0.745     0.745     0.796   +0.000   +0.051       
+  Lying_On_Back_Lab                                 0.451     0.451     0.464   +0.000   +0.014       
+  Lying_On_Left_Side_Lab                            0.491     0.491     0.559   +0.000   +0.069       
+  Lying_On_Right_Side_Lab                           0.161     0.161     0.906   +0.000   +0.745       
+  Lying_On_Stomach_Lab                              0.840     0.840     0.824   +0.000   -0.015       
+  Machine_Chest_Press_Lab                           0.981     0.981     0.945   +0.000   -0.036       
+  Machine_Leg_Press_Lab                             0.097     0.097     0.298   +0.000   +0.201       
+  Organizing_Shelf_Cabinet                          0.687     0.687     0.650   +0.000   -0.037       
+  Playing_Frisbee                                   0.724     0.724     0.851   +0.000   +0.127       
+  Push_Up_Lab                                       0.750     0.750     0.531   +0.000   -0.219       
+  Sit_Recline_Talk_Lab                              0.274     0.274     0.485   +0.000   +0.211       
+  Sit_Recline_Web_Browse_Lab                        0.331     0.331     0.344   +0.000   +0.013       
+  Sit_Typing_Lab                                    0.720     0.720     0.719   +0.000   -0.001       
+  Sit_Writing_Lab                                   0.205     0.205     0.546   +0.000   +0.341       
+  Sitting_Still                                     0.658     0.658     0.701   +0.000   +0.043       
+  Sitting_With_Movement                             0.600     0.600     0.594   +0.000   -0.006       
+  Stand_Conversation_Lab                            0.175     0.274     0.218   +0.099   +0.043  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.536     0.536     0.620   +0.000   +0.084       
+  Stand_Shelf_Unload_Lab                            0.833     0.756     0.763   -0.077   -0.070  ◀◀◀  
+  Standing_Still                                    0.480     0.480     0.531   +0.000   +0.051       
+  Standing_With_Movement                            0.694     0.602     0.571   -0.093   -0.123  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.847     0.847     0.875   +0.000   +0.029       
+  Sweeping                                          0.640     0.640     0.761   +0.000   +0.121       
+  Treadmill_2mph_Lab                                0.847     0.847     0.920   +0.000   +0.073       
+  Treadmill_3mph_Briefcase_Lab                      0.715     0.715     0.976   +0.000   +0.261       
+  Treadmill_3mph_Conversation_Lab                   0.487     0.487     0.512   +0.000   +0.026       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.990   +0.000   +0.356       
+  Treadmill_3mph_Free_Walk_Lab                      0.725     0.725     0.906   +0.000   +0.182       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     1.000   +0.000   +0.000       
+  Treadmill_3mph_Phone_Lab                          0.725     0.725     0.787   +0.000   +0.062       
+  Treadmill_4mph_Lab                                0.940     0.951     0.964   +0.012   +0.025  ◀◀◀  
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.469     0.469     0.657   +0.000   +0.188       
+  Walking                                           0.935     0.935     0.949   +0.000   +0.014       
+  Walking_Down_Stairs                               0.894     0.225     0.939   -0.668   +0.045  ◀◀◀  
+  Walking_Up_Stairs                                 0.630     0.630     0.715   +0.000   +0.085       
+  Washing_Dishes_Lab                                0.631     0.631     0.695   +0.000   +0.065       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6384    0.6202    0.7234  -0.0182  +0.0851
+  WEIGHTED F1                                      0.6926    0.6641    0.7182  -0.0285  +0.0256
+====================================================================================================
+  → Budget=5 | Baseline=0.6384 | Proposed=0.6202 (-0.0182) | Oracle=0.7234 (+0.0851) | %Oracle=66.3%
+
+  Budget=5 (5 classes): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (5): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWrist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 240 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+[SensorDataset:val] 60 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+====================================================================================================
+  Per-class F1 comparison  (5 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.585     0.585     0.635   +0.000   +0.050       
+  Arm_Curls_Lab                                     0.977     0.977     0.933   +0.000   -0.043       
+  Chopping_Food_Lab                                 0.422     0.422     0.803   +0.000   +0.381       
+  Folding_Clothes                                   0.745     0.745     0.796   +0.000   +0.051       
+  Lying_On_Back_Lab                                 0.451     0.451     0.464   +0.000   +0.014       
+  Lying_On_Left_Side_Lab                            0.491     0.491     0.559   +0.000   +0.069       
+  Lying_On_Right_Side_Lab                           0.161     0.161     0.906   +0.000   +0.745       
+  Lying_On_Stomach_Lab                              0.840     0.840     0.824   +0.000   -0.015       
+  Machine_Chest_Press_Lab                           0.981     0.981     0.945   +0.000   -0.036       
+  Machine_Leg_Press_Lab                             0.097     0.097     0.298   +0.000   +0.201       
+  Organizing_Shelf_Cabinet                          0.687     0.687     0.650   +0.000   -0.037       
+  Playing_Frisbee                                   0.724     0.724     0.851   +0.000   +0.127       
+  Push_Up_Lab                                       0.750     0.750     0.531   +0.000   -0.219       
+  Sit_Recline_Talk_Lab                              0.274     0.274     0.485   +0.000   +0.211       
+  Sit_Recline_Web_Browse_Lab                        0.331     0.331     0.344   +0.000   +0.013       
+  Sit_Typing_Lab                                    0.720     0.720     0.719   +0.000   -0.001       
+  Sit_Writing_Lab                                   0.205     0.205     0.546   +0.000   +0.341       
+  Sitting_Still                                     0.658     0.658     0.701   +0.000   +0.043       
+  Sitting_With_Movement                             0.600     0.600     0.594   +0.000   -0.006       
+  Stand_Conversation_Lab                            0.175     0.257     0.218   +0.081   +0.043  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.536     0.536     0.620   +0.000   +0.084       
+  Stand_Shelf_Unload_Lab                            0.833     0.638     0.763   -0.196   -0.070  ◀◀◀  
+  Standing_Still                                    0.480     0.480     0.531   +0.000   +0.051       
+  Standing_With_Movement                            0.694     0.605     0.571   -0.090   -0.123  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.847     0.847     0.875   +0.000   +0.029       
+  Sweeping                                          0.640     0.640     0.761   +0.000   +0.121       
+  Treadmill_2mph_Lab                                0.847     0.847     0.920   +0.000   +0.073       
+  Treadmill_3mph_Briefcase_Lab                      0.715     0.715     0.976   +0.000   +0.261       
+  Treadmill_3mph_Conversation_Lab                   0.487     0.487     0.512   +0.000   +0.026       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.990   +0.000   +0.356       
+  Treadmill_3mph_Free_Walk_Lab                      0.725     0.725     0.906   +0.000   +0.182       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     1.000   +0.000   +0.000       
+  Treadmill_3mph_Phone_Lab                          0.725     0.725     0.787   +0.000   +0.062       
+  Treadmill_4mph_Lab                                0.940     0.767     0.964   -0.173   +0.025  ◀◀◀  
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.469     0.469     0.657   +0.000   +0.188       
+  Walking                                           0.935     0.935     0.949   +0.000   +0.014       
+  Walking_Down_Stairs                               0.894     0.258     0.939   -0.635   +0.045  ◀◀◀  
+  Walking_Up_Stairs                                 0.630     0.630     0.715   +0.000   +0.085       
+  Washing_Dishes_Lab                                0.631     0.631     0.695   +0.000   +0.065       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6384    0.6131    0.7234  -0.0253  +0.0851
+  WEIGHTED F1                                      0.6926    0.6603    0.7182  -0.0323  +0.0256
+====================================================================================================
+  → Budget=5 | Baseline=0.6384 | Proposed=0.6131 (-0.0253) | Oracle=0.7234 (+0.0851) | %Oracle=52.6%
+
+  Budget=5 (5 classes): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (5): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWrist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 240 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+[SensorDataset:val] 60 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+====================================================================================================
+  Per-class F1 comparison  (5 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.585     0.585     0.635   +0.000   +0.050       
+  Arm_Curls_Lab                                     0.977     0.977     0.933   +0.000   -0.043       
+  Chopping_Food_Lab                                 0.422     0.422     0.803   +0.000   +0.381       
+  Folding_Clothes                                   0.745     0.745     0.796   +0.000   +0.051       
+  Lying_On_Back_Lab                                 0.451     0.451     0.464   +0.000   +0.014       
+  Lying_On_Left_Side_Lab                            0.491     0.491     0.559   +0.000   +0.069       
+  Lying_On_Right_Side_Lab                           0.161     0.161     0.906   +0.000   +0.745       
+  Lying_On_Stomach_Lab                              0.840     0.840     0.824   +0.000   -0.015       
+  Machine_Chest_Press_Lab                           0.981     0.981     0.945   +0.000   -0.036       
+  Machine_Leg_Press_Lab                             0.097     0.097     0.298   +0.000   +0.201       
+  Organizing_Shelf_Cabinet                          0.687     0.687     0.650   +0.000   -0.037       
+  Playing_Frisbee                                   0.724     0.724     0.851   +0.000   +0.127       
+  Push_Up_Lab                                       0.750     0.750     0.531   +0.000   -0.219       
+  Sit_Recline_Talk_Lab                              0.274     0.274     0.485   +0.000   +0.211       
+  Sit_Recline_Web_Browse_Lab                        0.331     0.331     0.344   +0.000   +0.013       
+  Sit_Typing_Lab                                    0.720     0.720     0.719   +0.000   -0.001       
+  Sit_Writing_Lab                                   0.205     0.205     0.546   +0.000   +0.341       
+  Sitting_Still                                     0.658     0.658     0.701   +0.000   +0.043       
+  Sitting_With_Movement                             0.600     0.600     0.594   +0.000   -0.006       
+  Stand_Conversation_Lab                            0.175     0.178     0.218   +0.003   +0.043  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.536     0.536     0.620   +0.000   +0.084       
+  Stand_Shelf_Unload_Lab                            0.833     0.667     0.763   -0.167   -0.070  ◀◀◀  
+  Standing_Still                                    0.480     0.480     0.531   +0.000   +0.051       
+  Standing_With_Movement                            0.694     0.669     0.571   -0.026   -0.123  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.847     0.847     0.875   +0.000   +0.029       
+  Sweeping                                          0.640     0.640     0.761   +0.000   +0.121       
+  Treadmill_2mph_Lab                                0.847     0.847     0.920   +0.000   +0.073       
+  Treadmill_3mph_Briefcase_Lab                      0.715     0.715     0.976   +0.000   +0.261       
+  Treadmill_3mph_Conversation_Lab                   0.487     0.487     0.512   +0.000   +0.026       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.990   +0.000   +0.356       
+  Treadmill_3mph_Free_Walk_Lab                      0.725     0.725     0.906   +0.000   +0.182       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     1.000   +0.000   +0.000       
+  Treadmill_3mph_Phone_Lab                          0.725     0.725     0.787   +0.000   +0.062       
+  Treadmill_4mph_Lab                                0.940     0.977     0.964   +0.038   +0.025  ◀◀◀  
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.469     0.469     0.657   +0.000   +0.188       
+  Walking                                           0.935     0.935     0.949   +0.000   +0.014       
+  Walking_Down_Stairs                               0.894     0.231     0.939   -0.662   +0.045  ◀◀◀  
+  Walking_Up_Stairs                                 0.630     0.630     0.715   +0.000   +0.085       
+  Washing_Dishes_Lab                                0.631     0.631     0.695   +0.000   +0.065       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6384    0.6180    0.7234  -0.0204  +0.0851
+  WEIGHTED F1                                      0.6926    0.6799    0.7182  -0.0127  +0.0256
+====================================================================================================
+  → Budget=5 | Baseline=0.6384 | Proposed=0.6180 (-0.0204) | Oracle=0.7234 (+0.0851) | %Oracle=55.6%
+
+  Budget=all (5 classes): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (5): ['Treadmill_4mph_Lab', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_With_Movement', 'Stand_Shelf_Unload_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWrist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 240 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+[SensorDataset:val] 60 windows | 5 classes | sensors=['LeftWrist', 'RightWrist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+====================================================================================================
+  Per-class F1 comparison  (5 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.585     0.585     0.635   +0.000   +0.050       
+  Arm_Curls_Lab                                     0.977     0.977     0.933   +0.000   -0.043       
+  Chopping_Food_Lab                                 0.422     0.422     0.803   +0.000   +0.381       
+  Folding_Clothes                                   0.745     0.745     0.796   +0.000   +0.051       
+  Lying_On_Back_Lab                                 0.451     0.451     0.464   +0.000   +0.014       
+  Lying_On_Left_Side_Lab                            0.491     0.491     0.559   +0.000   +0.069       
+  Lying_On_Right_Side_Lab                           0.161     0.161     0.906   +0.000   +0.745       
+  Lying_On_Stomach_Lab                              0.840     0.840     0.824   +0.000   -0.015       
+  Machine_Chest_Press_Lab                           0.981     0.981     0.945   +0.000   -0.036       
+  Machine_Leg_Press_Lab                             0.097     0.097     0.298   +0.000   +0.201       
+  Organizing_Shelf_Cabinet                          0.687     0.687     0.650   +0.000   -0.037       
+  Playing_Frisbee                                   0.724     0.724     0.851   +0.000   +0.127       
+  Push_Up_Lab                                       0.750     0.750     0.531   +0.000   -0.219       
+  Sit_Recline_Talk_Lab                              0.274     0.274     0.485   +0.000   +0.211       
+  Sit_Recline_Web_Browse_Lab                        0.331     0.331     0.344   +0.000   +0.013       
+  Sit_Typing_Lab                                    0.720     0.720     0.719   +0.000   -0.001       
+  Sit_Writing_Lab                                   0.205     0.205     0.546   +0.000   +0.341       
+  Sitting_Still                                     0.658     0.658     0.701   +0.000   +0.043       
+  Sitting_With_Movement                             0.600     0.600     0.594   +0.000   -0.006       
+  Stand_Conversation_Lab                            0.175     0.279     0.218   +0.104   +0.043  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.536     0.536     0.620   +0.000   +0.084       
+  Stand_Shelf_Unload_Lab                            0.833     0.683     0.763   -0.150   -0.070  ◀◀◀  
+  Standing_Still                                    0.480     0.480     0.531   +0.000   +0.051       
+  Standing_With_Movement                            0.694     0.597     0.571   -0.098   -0.123  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.847     0.847     0.875   +0.000   +0.029       
+  Sweeping                                          0.640     0.640     0.761   +0.000   +0.121       
+  Treadmill_2mph_Lab                                0.847     0.847     0.920   +0.000   +0.073       
+  Treadmill_3mph_Briefcase_Lab                      0.715     0.715     0.976   +0.000   +0.261       
+  Treadmill_3mph_Conversation_Lab                   0.487     0.487     0.512   +0.000   +0.026       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.990   +0.000   +0.356       
+  Treadmill_3mph_Free_Walk_Lab                      0.725     0.725     0.906   +0.000   +0.182       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     1.000   +0.000   +0.000       
+  Treadmill_3mph_Phone_Lab                          0.725     0.725     0.787   +0.000   +0.062       
+  Treadmill_4mph_Lab                                0.940     0.953     0.964   +0.014   +0.025  ◀◀◀  
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.469     0.469     0.657   +0.000   +0.188       
+  Walking                                           0.935     0.935     0.949   +0.000   +0.014       
+  Walking_Down_Stairs                               0.894     0.195     0.939   -0.699   +0.045  ◀◀◀  
+  Walking_Up_Stairs                                 0.630     0.630     0.715   +0.000   +0.085       
+  Washing_Dishes_Lab                                0.631     0.631     0.695   +0.000   +0.065       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6384    0.6176    0.7234  -0.0207  +0.0851
+  WEIGHTED F1                                      0.6926    0.6622    0.7182  -0.0303  +0.0256
+====================================================================================================
+  → Budget=all | Baseline=0.6384 | Proposed=0.6176 (-0.0207) | Oracle=0.7234 (+0.0851) | %Oracle=86.9%
+
+[2/20] 
+──────────────────────────────────────────────────────────────────────
+  LW__plus_RT
+  Base: ['LeftWrist'] → New: ['RightThigh']
+──────────────────────────────────────────────────────────────────────
+  [cached] base checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+
+============================================================
+Step 2: Detecting confused classes
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+  96/450 windows had no classifier fire above threshold
+
+Base model val — Macro F1: 0.2664 | Weighted F1: 0.2559
+
+Class                                                  F1  Confusion  Confused with
+──────────────────────────────────────────────────────────────────────────────────────────
+Lying_On_Back_Lab                                   0.000         12  
+Lying_On_Right_Side_Lab                             0.000         12  
+Machine_Chest_Press_Lab                             0.000          1  Ab_Crunches_Lab(1)
+Machine_Leg_Press_Lab                               0.000          7  
+Sit_Writing_Lab                                     0.000         12  Standing_Still(2), Standing_With_Movement(1)
+Sitting_Still                                       0.000         11  
+Stand_Conversation_Lab                              0.000         12  Sitting_Still(3), Sitting_With_Movement(3), Sit_Writing_Lab(1)
+Stand_Shelf_Load_Lab                                0.000          6  Walking(1)
+Stand_Shelf_Unload_Lab                              0.000          5  Walking(1)
+Standing_Still                                      0.000         12  Standing_With_Movement(1)
+Treadmill_3mph_Briefcase_Lab                        0.000          8  
+Treadmill_3mph_Drink_Lab                            0.000         12  
+Treadmill_3mph_Free_Walk_Lab                        0.000          6  
+Treadmill_3mph_Hands_Pockets_Lab                    0.000          0  
+Treadmill_3mph_Phone_Lab                            0.000          5  
+Vacuuming                                           0.000          6  
+Walking_Up_Stairs                                   0.000          1  
+Standing_With_Movement                              0.032         11  Standing_Still(2), Sitting_With_Movement(1), Sit_Writing_Lab(1)
+Walking_Down_Stairs                                 0.143          1  Standing_Still(1), Standing_With_Movement(1)
+Organizing_Shelf_Cabinet                            0.154          6  Walking(3)
+Sit_Recline_Talk_Lab                                0.154         11  Chopping_Food_Lab(1), Standing_With_Movement(1)
+Sit_Recline_Web_Browse_Lab                          0.154         11  
+Sweeping                                            0.154          5  Playing_Frisbee(1), Standing_Still(1)
+Treadmill_3mph_Conversation_Lab                     0.154          8  
+Walking                                             0.166          0  
+Sitting_With_Movement                               0.176          6  Lying_On_Right_Side_Lab(1), Standing_Still(1), Washing_Dishes_Lab(1)
+Folding_Clothes                                     0.286          7  Standing_With_Movement(2), Playing_Frisbee(1), Walking(1)
+Lying_On_Left_Side_Lab                              0.400          9  Standing_Still(1)
+Playing_Frisbee                                     0.471          4  Standing_Still(1)
+Treadmill_4mph_Lab                                  0.500          2  Stand_Shelf_Load_Lab(1), Standing_Still(1), Standing_With_Movement(1)
+Sit_Typing_Lab                                      0.588          6  
+Chopping_Food_Lab                                   0.632          4  Walking(1), Washing_Dishes_Lab(1)
+Treadmill_2mph_Lab                                  0.737          3  Standing_With_Movement(3), Standing_Still(1)
+Treadmill_5_5mph_Lab                                0.737          0  
+Push_Up_Lab                                         0.750          2  Standing_Still(1)
+Washing_Dishes_Lab                                  0.783          2  Walking(1)
+Ab_Crunches_Lab                                     0.889          1  Standing_With_Movement(1)
+Lying_On_Stomach_Lab                                0.909          2  Sitting_Still(1)
+Stationary_Biking_300_Lab                           0.957          1  Sitting_Still(1), Sitting_With_Movement(1)
+Arm_Curls_Lab                                       1.000          0  
+
+All 40 classes ranked by F1 (ascending)
+
+============================================================
+Step 3: Estimating benefit of new sensor
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+Encoding FL data with known sensors (pseudo-labeling)...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+Encoding FL data with new sensor only (discriminability)...
+[UnlabeledFLDataset] 437247 windows | sensors=['RightThigh']
+Pseudo-labeling FL data...
+  Ab_Crunches_Lab                               pseudo_labeled=425
+  Arm_Curls_Lab                                 pseudo_labeled=3
+  Chopping_Food_Lab                             pseudo_labeled=2444
+  Folding_Clothes                               pseudo_labeled=1557
+  Lying_On_Back_Lab                             pseudo_labeled=0
+  Lying_On_Left_Side_Lab                        pseudo_labeled=2903
+  Lying_On_Right_Side_Lab                       pseudo_labeled=0
+  Lying_On_Stomach_Lab                          pseudo_labeled=21126
+  Machine_Chest_Press_Lab                       pseudo_labeled=18
+  Machine_Leg_Press_Lab                         pseudo_labeled=16
+  Organizing_Shelf_Cabinet                      pseudo_labeled=140
+  Playing_Frisbee                               pseudo_labeled=685
+  Push_Up_Lab                                   pseudo_labeled=526
+  Sit_Recline_Talk_Lab                          pseudo_labeled=13
+  Sit_Recline_Web_Browse_Lab                    pseudo_labeled=2563
+  Sit_Typing_Lab                                pseudo_labeled=861
+  Sit_Writing_Lab                               pseudo_labeled=330
+  Sitting_Still                                 pseudo_labeled=16935
+  Sitting_With_Movement                         pseudo_labeled=15390
+  Stand_Conversation_Lab                        pseudo_labeled=120
+  Stand_Shelf_Load_Lab                          pseudo_labeled=45
+  Stand_Shelf_Unload_Lab                        pseudo_labeled=255
+  Standing_Still                                pseudo_labeled=10539
+  Standing_With_Movement                        pseudo_labeled=18956
+  Stationary_Biking_300_Lab                     pseudo_labeled=864
+  Sweeping                                      pseudo_labeled=241
+  Treadmill_2mph_Lab                            pseudo_labeled=330
+  Treadmill_3mph_Briefcase_Lab                  pseudo_labeled=6
+  Treadmill_3mph_Conversation_Lab               pseudo_labeled=330
+  Treadmill_3mph_Drink_Lab                      pseudo_labeled=0
+  Treadmill_3mph_Free_Walk_Lab                  pseudo_labeled=0
+  Treadmill_3mph_Hands_Pockets_Lab              pseudo_labeled=67
+  Treadmill_3mph_Phone_Lab                      pseudo_labeled=72
+  Treadmill_4mph_Lab                            pseudo_labeled=2443
+  Treadmill_5_5mph_Lab                          pseudo_labeled=39
+  Vacuuming                                     pseudo_labeled=1130
+  Walking                                       pseudo_labeled=19887
+  Walking_Down_Stairs                           pseudo_labeled=1745
+  Walking_Up_Stairs                             pseudo_labeled=583
+  Washing_Dishes_Lab                            pseudo_labeled=13744
+
+Class                                             1-F1   Direct    Oppos      α  Discrim  Benefit
+───────────────────────────────────────────────────────────────────────────────────────────────
+Sitting_With_Movement                            0.824   0.6202   0.1385   1.00   0.6202   0.5107
+Stand_Conversation_Lab                           1.000   0.3404   0.3405   1.00   0.3404   0.3404
+Sit_Recline_Talk_Lab                             0.846   0.3597   0.3223   1.00   0.3597   0.3044
+Lying_On_Left_Side_Lab                           0.600   0.3701   0.0000   1.00   0.3701   0.2221
+Stand_Shelf_Unload_Lab                           1.000   0.2037   0.0000   1.00   0.2037   0.2037
+Chopping_Food_Lab                                0.368   0.5408   0.0684   1.00   0.5408   0.1992
+Standing_With_Movement                           0.968   0.1915   0.3149   1.00   0.1915   0.1854
+Walking_Down_Stairs                              0.857   0.1732   0.0115   1.00   0.1732   0.1485
+Organizing_Shelf_Cabinet                         0.846   0.1176   0.0000   1.00   0.1176   0.0995
+Lying_On_Stomach_Lab                             0.091   0.7554   0.0000   1.00   0.7554   0.0687
+Treadmill_4mph_Lab                               0.500   0.1355   0.0402   1.00   0.1355   0.0677
+Machine_Chest_Press_Lab                          1.000   0.0586   0.0000   1.00   0.0586   0.0586
+Sit_Writing_Lab                                  1.000   0.0571   0.0115   1.00   0.0571   0.0571
+Playing_Frisbee                                  0.529   0.0888   0.0000   1.00   0.0888   0.0470
+Folding_Clothes                                  0.714   0.0588   0.1215   1.00   0.0588   0.0420
+Stand_Shelf_Load_Lab                             1.000   0.0296   0.0000   1.00   0.0296   0.0296
+Sweeping                                         0.846   0.0315   0.0888   1.00   0.0315   0.0267
+Push_Up_Lab                                      0.250   0.0884   0.0000   1.00   0.0884   0.0221
+Treadmill_2mph_Lab                               0.263   0.0715   0.0115   1.00   0.0715   0.0188
+Washing_Dishes_Lab                               0.217   0.0684   0.0000   1.00   0.0684   0.0149
+Stationary_Biking_300_Lab                        0.043   0.2949   0.7754   1.00   0.2949   0.0128
+Standing_Still                                   1.000   0.0115   0.0000   1.00   0.0115   0.0115
+Ab_Crunches_Lab                                  0.111   0.0595   0.0000   1.00   0.0595   0.0066
+Lying_On_Back_Lab                                1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Lying_On_Right_Side_Lab                          1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Machine_Leg_Press_Lab                            1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Sitting_Still                                    1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Briefcase_Lab                     1.000   0.0000   0.0000   0.60   0.0000   0.0000
+Treadmill_3mph_Drink_Lab                         1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Free_Walk_Lab                     1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Hands_Pockets_Lab                 1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Phone_Lab                         1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Vacuuming                                        1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Walking_Up_Stairs                                1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Recline_Web_Browse_Lab                       0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Conversation_Lab                  0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Walking                                          0.834   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Typing_Lab                                   0.412   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_5_5mph_Lab                             0.263   0.0000   0.0000   1.00   0.0000   0.0000
+Arm_Curls_Lab                                    0.000   0.0000   0.0000   0.30   0.0000   0.0000
+
+Elbow at rank 10 (score=0.0687)
+Classes selected for re-annotation (10): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+  Target classes (10): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+  [cached] oracle checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+
+  Budget=5 (5 classes): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (5): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightThigh']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 240 windows | 5 classes | sensors=['LeftWrist', 'RightThigh']
+[SensorDataset:val] 60 windows | 5 classes | sensors=['LeftWrist', 'RightThigh']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+
+====================================================================================================
+  Per-class F1 comparison  (5 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.907     0.907     0.780   +0.000   -0.127       
+  Arm_Curls_Lab                                     1.000     1.000     0.977   +0.000   -0.023       
+  Chopping_Food_Lab                                 0.377     0.377     0.662   +0.000   +0.285       
+  Folding_Clothes                                   0.727     0.727     0.806   +0.000   +0.079       
+  Lying_On_Back_Lab                                 0.466     0.466     0.747   +0.000   +0.281       
+  Lying_On_Left_Side_Lab                            0.417     0.691     0.566   +0.274   +0.149  ◀◀◀  
+  Lying_On_Right_Side_Lab                           0.175     0.175     0.646   +0.000   +0.471       
+  Lying_On_Stomach_Lab                              0.837     0.837     0.897   +0.000   +0.060       
+  Machine_Chest_Press_Lab                           0.929     0.929     0.926   +0.000   -0.003       
+  Machine_Leg_Press_Lab                             0.173     0.173     0.923   +0.000   +0.750       
+  Organizing_Shelf_Cabinet                          0.692     0.692     0.797   +0.000   +0.105       
+  Playing_Frisbee                                   0.620     0.620     0.765   +0.000   +0.144       
+  Push_Up_Lab                                       0.765     0.765     0.964   +0.000   +0.200       
+  Sit_Recline_Talk_Lab                              0.145     0.275     0.204   +0.130   +0.059  ◀◀◀  
+  Sit_Recline_Web_Browse_Lab                        0.329     0.329     0.328   +0.000   -0.001       
+  Sit_Typing_Lab                                    0.509     0.509     0.822   +0.000   +0.312       
+  Sit_Writing_Lab                                   0.221     0.221     0.464   +0.000   +0.243       
+  Sitting_Still                                     0.633     0.633     0.782   +0.000   +0.150       
+  Sitting_With_Movement                             0.598     0.613     0.749   +0.015   +0.151  ◀◀◀  
+  Stand_Conversation_Lab                            0.164     0.268     0.244   +0.104   +0.079  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.511     0.511     0.784   +0.000   +0.273       
+  Stand_Shelf_Unload_Lab                            0.755     0.633     0.790   -0.122   +0.035  ◀◀◀  
+  Standing_Still                                    0.513     0.513     0.538   +0.000   +0.025       
+  Standing_With_Movement                            0.664     0.664     0.679   +0.000   +0.014       
+  Stationary_Biking_300_Lab                         0.859     0.859     0.996   +0.000   +0.138       
+  Sweeping                                          0.711     0.711     0.876   +0.000   +0.165       
+  Treadmill_2mph_Lab                                0.856     0.856     0.841   +0.000   -0.015       
+  Treadmill_3mph_Briefcase_Lab                      0.752     0.752     0.765   +0.000   +0.012       
+  Treadmill_3mph_Conversation_Lab                   0.462     0.462     0.560   +0.000   +0.098       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.680   +0.000   +0.045       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.646   +0.000   -0.074       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.998   +0.000   -0.002       
+  Treadmill_3mph_Phone_Lab                          0.635     0.635     0.883   +0.000   +0.248       
+  Treadmill_4mph_Lab                                0.918     0.918     0.946   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.489     0.489     0.585   +0.000   +0.095       
+  Walking                                           0.936     0.936     0.956   +0.000   +0.020       
+  Walking_Down_Stairs                               0.863     0.863     0.933   +0.000   +0.070       
+  Walking_Up_Stairs                                 0.644     0.644     0.756   +0.000   +0.112       
+  Washing_Dishes_Lab                                0.685     0.685     0.706   +0.000   +0.021       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6323    0.6423    0.7491  +0.0100  +0.1168
+  WEIGHTED F1                                      0.6789    0.6863    0.7488  +0.0074  +0.0699
+====================================================================================================
+  → Budget=5 | Baseline=0.6323 | Proposed=0.6423 (+0.0100) | Oracle=0.7491 (+0.1168) | %Oracle=84.8%
+
+  Budget=10 (10 classes): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (10): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightThigh']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 480 windows | 10 classes | sensors=['LeftWrist', 'RightThigh']
+[SensorDataset:val] 120 windows | 10 classes | sensors=['LeftWrist', 'RightThigh']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+
+====================================================================================================
+  Per-class F1 comparison  (10 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.907     0.907     0.780   +0.000   -0.127       
+  Arm_Curls_Lab                                     1.000     1.000     0.977   +0.000   -0.023       
+  Chopping_Food_Lab                                 0.377     0.829     0.662   +0.452   +0.285  ◀◀◀  
+  Folding_Clothes                                   0.727     0.727     0.806   +0.000   +0.079       
+  Lying_On_Back_Lab                                 0.466     0.466     0.747   +0.000   +0.281       
+  Lying_On_Left_Side_Lab                            0.417     0.773     0.566   +0.356   +0.149  ◀◀◀  
+  Lying_On_Right_Side_Lab                           0.175     0.175     0.646   +0.000   +0.471       
+  Lying_On_Stomach_Lab                              0.837     0.922     0.897   +0.085   +0.060  ◀◀◀  
+  Machine_Chest_Press_Lab                           0.929     0.929     0.926   +0.000   -0.003       
+  Machine_Leg_Press_Lab                             0.173     0.173     0.923   +0.000   +0.750       
+  Organizing_Shelf_Cabinet                          0.692     0.743     0.797   +0.051   +0.105  ◀◀◀  
+  Playing_Frisbee                                   0.620     0.620     0.765   +0.000   +0.144       
+  Push_Up_Lab                                       0.765     0.765     0.964   +0.000   +0.200       
+  Sit_Recline_Talk_Lab                              0.145     0.185     0.204   +0.039   +0.059  ◀◀◀  
+  Sit_Recline_Web_Browse_Lab                        0.329     0.329     0.328   +0.000   -0.001       
+  Sit_Typing_Lab                                    0.509     0.509     0.822   +0.000   +0.312       
+  Sit_Writing_Lab                                   0.221     0.221     0.464   +0.000   +0.243       
+  Sitting_Still                                     0.633     0.633     0.782   +0.000   +0.150       
+  Sitting_With_Movement                             0.598     0.629     0.749   +0.031   +0.151  ◀◀◀  
+  Stand_Conversation_Lab                            0.164     0.198     0.244   +0.034   +0.079  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.511     0.511     0.784   +0.000   +0.273       
+  Stand_Shelf_Unload_Lab                            0.755     0.645     0.790   -0.110   +0.035  ◀◀◀  
+  Standing_Still                                    0.513     0.513     0.538   +0.000   +0.025       
+  Standing_With_Movement                            0.664     0.669     0.679   +0.005   +0.014  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.859     0.859     0.996   +0.000   +0.138       
+  Sweeping                                          0.711     0.711     0.876   +0.000   +0.165       
+  Treadmill_2mph_Lab                                0.856     0.856     0.841   +0.000   -0.015       
+  Treadmill_3mph_Briefcase_Lab                      0.752     0.752     0.765   +0.000   +0.012       
+  Treadmill_3mph_Conversation_Lab                   0.462     0.462     0.560   +0.000   +0.098       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.680   +0.000   +0.045       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.646   +0.000   -0.074       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.998   +0.000   -0.002       
+  Treadmill_3mph_Phone_Lab                          0.635     0.635     0.883   +0.000   +0.248       
+  Treadmill_4mph_Lab                                0.918     0.918     0.946   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.489     0.489     0.585   +0.000   +0.095       
+  Walking                                           0.936     0.936     0.956   +0.000   +0.020       
+  Walking_Down_Stairs                               0.863     0.468     0.933   -0.395   +0.070  ◀◀◀  
+  Walking_Up_Stairs                                 0.644     0.644     0.756   +0.000   +0.112       
+  Washing_Dishes_Lab                                0.685     0.685     0.706   +0.000   +0.021       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6323    0.6460    0.7491  +0.0137  +0.1168
+  WEIGHTED F1                                      0.6789    0.6910    0.7488  +0.0121  +0.0699
+====================================================================================================
+  → Budget=10 | Baseline=0.6323 | Proposed=0.6460 (+0.0137) | Oracle=0.7491 (+0.1168) | %Oracle=51.2%
+
+  Budget=10 (10 classes): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (10): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightThigh']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 480 windows | 10 classes | sensors=['LeftWrist', 'RightThigh']
+[SensorDataset:val] 120 windows | 10 classes | sensors=['LeftWrist', 'RightThigh']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+
+====================================================================================================
+  Per-class F1 comparison  (10 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.907     0.907     0.780   +0.000   -0.127       
+  Arm_Curls_Lab                                     1.000     1.000     0.977   +0.000   -0.023       
+  Chopping_Food_Lab                                 0.377     0.663     0.662   +0.286   +0.285  ◀◀◀  
+  Folding_Clothes                                   0.727     0.727     0.806   +0.000   +0.079       
+  Lying_On_Back_Lab                                 0.466     0.466     0.747   +0.000   +0.281       
+  Lying_On_Left_Side_Lab                            0.417     0.775     0.566   +0.358   +0.149  ◀◀◀  
+  Lying_On_Right_Side_Lab                           0.175     0.175     0.646   +0.000   +0.471       
+  Lying_On_Stomach_Lab                              0.837     0.926     0.897   +0.089   +0.060  ◀◀◀  
+  Machine_Chest_Press_Lab                           0.929     0.929     0.926   +0.000   -0.003       
+  Machine_Leg_Press_Lab                             0.173     0.173     0.923   +0.000   +0.750       
+  Organizing_Shelf_Cabinet                          0.692     0.744     0.797   +0.052   +0.105  ◀◀◀  
+  Playing_Frisbee                                   0.620     0.620     0.765   +0.000   +0.144       
+  Push_Up_Lab                                       0.765     0.765     0.964   +0.000   +0.200       
+  Sit_Recline_Talk_Lab                              0.145     0.000     0.204   -0.145   +0.059  ◀◀◀  
+  Sit_Recline_Web_Browse_Lab                        0.329     0.329     0.328   +0.000   -0.001       
+  Sit_Typing_Lab                                    0.509     0.509     0.822   +0.000   +0.312       
+  Sit_Writing_Lab                                   0.221     0.221     0.464   +0.000   +0.243       
+  Sitting_Still                                     0.633     0.633     0.782   +0.000   +0.150       
+  Sitting_With_Movement                             0.598     0.606     0.749   +0.008   +0.151  ◀◀◀  
+  Stand_Conversation_Lab                            0.164     0.243     0.244   +0.078   +0.079  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.511     0.511     0.784   +0.000   +0.273       
+  Stand_Shelf_Unload_Lab                            0.755     0.680     0.790   -0.075   +0.035  ◀◀◀  
+  Standing_Still                                    0.513     0.513     0.538   +0.000   +0.025       
+  Standing_With_Movement                            0.664     0.726     0.679   +0.062   +0.014  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.859     0.859     0.996   +0.000   +0.138       
+  Sweeping                                          0.711     0.711     0.876   +0.000   +0.165       
+  Treadmill_2mph_Lab                                0.856     0.856     0.841   +0.000   -0.015       
+  Treadmill_3mph_Briefcase_Lab                      0.752     0.752     0.765   +0.000   +0.012       
+  Treadmill_3mph_Conversation_Lab                   0.462     0.462     0.560   +0.000   +0.098       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.680   +0.000   +0.045       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.646   +0.000   -0.074       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.998   +0.000   -0.002       
+  Treadmill_3mph_Phone_Lab                          0.635     0.635     0.883   +0.000   +0.248       
+  Treadmill_4mph_Lab                                0.918     0.918     0.946   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.489     0.489     0.585   +0.000   +0.095       
+  Walking                                           0.936     0.936     0.956   +0.000   +0.020       
+  Walking_Down_Stairs                               0.863     0.394     0.933   -0.469   +0.070  ◀◀◀  
+  Walking_Up_Stairs                                 0.644     0.644     0.756   +0.000   +0.112       
+  Washing_Dishes_Lab                                0.685     0.685     0.706   +0.000   +0.021       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6323    0.6384    0.7491  +0.0061  +0.1168
+  WEIGHTED F1                                      0.6789    0.7009    0.7488  +0.0220  +0.0699
+====================================================================================================
+  → Budget=10 | Baseline=0.6323 | Proposed=0.6384 (+0.0061) | Oracle=0.7491 (+0.1168) | %Oracle=50.1%
+
+  Budget=all (10 classes): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (10): ['Sitting_With_Movement', 'Stand_Conversation_Lab', 'Sit_Recline_Talk_Lab', 'Lying_On_Left_Side_Lab', 'Stand_Shelf_Unload_Lab', 'Chopping_Food_Lab', 'Standing_With_Movement', 'Walking_Down_Stairs', 'Organizing_Shelf_Cabinet', 'Lying_On_Stomach_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightThigh']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 480 windows | 10 classes | sensors=['LeftWrist', 'RightThigh']
+[SensorDataset:val] 120 windows | 10 classes | sensors=['LeftWrist', 'RightThigh']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightThigh']
+
+====================================================================================================
+  Per-class F1 comparison  (10 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.907     0.907     0.780   +0.000   -0.127       
+  Arm_Curls_Lab                                     1.000     1.000     0.977   +0.000   -0.023       
+  Chopping_Food_Lab                                 0.377     0.846     0.662   +0.469   +0.285  ◀◀◀  
+  Folding_Clothes                                   0.727     0.727     0.806   +0.000   +0.079       
+  Lying_On_Back_Lab                                 0.466     0.466     0.747   +0.000   +0.281       
+  Lying_On_Left_Side_Lab                            0.417     0.770     0.566   +0.353   +0.149  ◀◀◀  
+  Lying_On_Right_Side_Lab                           0.175     0.175     0.646   +0.000   +0.471       
+  Lying_On_Stomach_Lab                              0.837     0.919     0.897   +0.083   +0.060  ◀◀◀  
+  Machine_Chest_Press_Lab                           0.929     0.929     0.926   +0.000   -0.003       
+  Machine_Leg_Press_Lab                             0.173     0.173     0.923   +0.000   +0.750       
+  Organizing_Shelf_Cabinet                          0.692     0.605     0.797   -0.087   +0.105  ◀◀◀  
+  Playing_Frisbee                                   0.620     0.620     0.765   +0.000   +0.144       
+  Push_Up_Lab                                       0.765     0.765     0.964   +0.000   +0.200       
+  Sit_Recline_Talk_Lab                              0.145     0.179     0.204   +0.034   +0.059  ◀◀◀  
+  Sit_Recline_Web_Browse_Lab                        0.329     0.329     0.328   +0.000   -0.001       
+  Sit_Typing_Lab                                    0.509     0.509     0.822   +0.000   +0.312       
+  Sit_Writing_Lab                                   0.221     0.221     0.464   +0.000   +0.243       
+  Sitting_Still                                     0.633     0.633     0.782   +0.000   +0.150       
+  Sitting_With_Movement                             0.598     0.554     0.749   -0.044   +0.151  ◀◀◀  
+  Stand_Conversation_Lab                            0.164     0.204     0.244   +0.040   +0.079  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.511     0.511     0.784   +0.000   +0.273       
+  Stand_Shelf_Unload_Lab                            0.755     0.685     0.790   -0.070   +0.035  ◀◀◀  
+  Standing_Still                                    0.513     0.513     0.538   +0.000   +0.025       
+  Standing_With_Movement                            0.664     0.704     0.679   +0.040   +0.014  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.859     0.859     0.996   +0.000   +0.138       
+  Sweeping                                          0.711     0.711     0.876   +0.000   +0.165       
+  Treadmill_2mph_Lab                                0.856     0.856     0.841   +0.000   -0.015       
+  Treadmill_3mph_Briefcase_Lab                      0.752     0.752     0.765   +0.000   +0.012       
+  Treadmill_3mph_Conversation_Lab                   0.462     0.462     0.560   +0.000   +0.098       
+  Treadmill_3mph_Drink_Lab                          0.635     0.635     0.680   +0.000   +0.045       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.646   +0.000   -0.074       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.998   +0.000   -0.002       
+  Treadmill_3mph_Phone_Lab                          0.635     0.635     0.883   +0.000   +0.248       
+  Treadmill_4mph_Lab                                0.918     0.918     0.946   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.489     0.489     0.585   +0.000   +0.095       
+  Walking                                           0.936     0.936     0.956   +0.000   +0.020       
+  Walking_Down_Stairs                               0.863     0.404     0.933   -0.458   +0.070  ◀◀◀  
+  Walking_Up_Stairs                                 0.644     0.644     0.756   +0.000   +0.112       
+  Washing_Dishes_Lab                                0.685     0.685     0.706   +0.000   +0.021       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6323    0.6413    0.7491  +0.0090  +0.1168
+  WEIGHTED F1                                      0.6789    0.6944    0.7488  +0.0155  +0.0699
+====================================================================================================
+  → Budget=all | Baseline=0.6323 | Proposed=0.6413 (+0.0090) | Oracle=0.7491 (+0.1168) | %Oracle=49.7%
+
+[3/20] 
+──────────────────────────────────────────────────────────────────────
+  LW__plus_RWa
+  Base: ['LeftWrist'] → New: ['RightWaist']
+──────────────────────────────────────────────────────────────────────
+  [cached] base checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+
+============================================================
+Step 2: Detecting confused classes
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+  94/450 windows had no classifier fire above threshold
+
+Base model val — Macro F1: 0.2415 | Weighted F1: 0.2322
+
+Class                                                  F1  Confusion  Confused with
+──────────────────────────────────────────────────────────────────────────────────────────
+Arm_Curls_Lab                                       0.000          0  
+Chopping_Food_Lab                                   0.000          8  Washing_Dishes_Lab(1)
+Lying_On_Back_Lab                                   0.000         12  
+Lying_On_Right_Side_Lab                             0.000         12  Sitting_Still(1)
+Machine_Leg_Press_Lab                               0.000          7  
+Sit_Recline_Talk_Lab                                0.000         11  Chopping_Food_Lab(1), Standing_With_Movement(1)
+Sit_Writing_Lab                                     0.000         12  Standing_With_Movement(2), Standing_Still(1)
+Stand_Conversation_Lab                              0.000         12  Sitting_Still(3), Sitting_With_Movement(3), Sit_Writing_Lab(1)
+Stand_Shelf_Load_Lab                                0.000          5  
+Stand_Shelf_Unload_Lab                              0.000          9  Walking(1)
+Standing_Still                                      0.000         12  Standing_With_Movement(1)
+Sweeping                                            0.000          6  Standing_Still(1)
+Treadmill_3mph_Briefcase_Lab                        0.000          7  
+Treadmill_3mph_Drink_Lab                            0.000         11  Treadmill_3mph_Briefcase_Lab(1)
+Treadmill_3mph_Free_Walk_Lab                        0.000         11  
+Treadmill_3mph_Hands_Pockets_Lab                    0.000          0  
+Treadmill_3mph_Phone_Lab                            0.000          5  
+Walking_Up_Stairs                                   0.000          1  
+Standing_With_Movement                              0.026         11  Standing_Still(2), Sitting_With_Movement(2), Sitting_Still(2)
+Sitting_Still                                       0.038         11  
+Sitting_With_Movement                               0.100          4  Washing_Dishes_Lab(1)
+Walking_Down_Stairs                                 0.143          3  Standing_Still(1), Standing_With_Movement(1)
+Organizing_Shelf_Cabinet                            0.154          6  
+Playing_Frisbee                                     0.154          7  Folding_Clothes(1), Standing_Still(1)
+Sit_Recline_Web_Browse_Lab                          0.154         11  
+Treadmill_3mph_Conversation_Lab                     0.154          6  
+Walking                                             0.175          0  
+Lying_On_Left_Side_Lab                              0.286         10  Standing_Still(1)
+Treadmill_2mph_Lab                                  0.286          3  Standing_With_Movement(3), Vacuuming(1)
+Vacuuming                                           0.471          3  
+Sit_Typing_Lab                                      0.500          6  
+Washing_Dishes_Lab                                  0.526          2  
+Treadmill_4mph_Lab                                  0.588          2  Stand_Shelf_Load_Lab(1), Standing_Still(1), Standing_With_Movement(1)
+Folding_Clothes                                     0.700          2  Standing_With_Movement(1), Vacuuming(1)
+Push_Up_Lab                                         0.750          2  Standing_Still(1)
+Machine_Chest_Press_Lab                             0.889          1  
+Lying_On_Stomach_Lab                                0.909          2  Ab_Crunches_Lab(1), Sitting_Still(1), Sitting_With_Movement(1)
+Ab_Crunches_Lab                                     0.941          1  Standing_With_Movement(1)
+Stationary_Biking_300_Lab                           0.957          1  Sitting_Still(1), Sitting_With_Movement(1)
+Treadmill_5_5mph_Lab                                1.000          0  
+
+All 40 classes ranked by F1 (ascending)
+
+============================================================
+Step 3: Estimating benefit of new sensor
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+Encoding FL data with known sensors (pseudo-labeling)...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+Encoding FL data with new sensor only (discriminability)...
+[UnlabeledFLDataset] 437247 windows | sensors=['RightWaist']
+Pseudo-labeling FL data...
+  Ab_Crunches_Lab                               pseudo_labeled=686
+  Arm_Curls_Lab                                 pseudo_labeled=15
+  Chopping_Food_Lab                             pseudo_labeled=645
+  Folding_Clothes                               pseudo_labeled=3469
+  Lying_On_Back_Lab                             pseudo_labeled=16
+  Lying_On_Left_Side_Lab                        pseudo_labeled=790
+  Lying_On_Right_Side_Lab                       pseudo_labeled=4
+  Lying_On_Stomach_Lab                          pseudo_labeled=22861
+  Machine_Chest_Press_Lab                       pseudo_labeled=21
+  Machine_Leg_Press_Lab                         pseudo_labeled=363
+  Organizing_Shelf_Cabinet                      pseudo_labeled=255
+  Playing_Frisbee                               pseudo_labeled=94
+  Push_Up_Lab                                   pseudo_labeled=146
+  Sit_Recline_Talk_Lab                          pseudo_labeled=3
+  Sit_Recline_Web_Browse_Lab                    pseudo_labeled=2108
+  Sit_Typing_Lab                                pseudo_labeled=2599
+  Sit_Writing_Lab                               pseudo_labeled=565
+  Sitting_Still                                 pseudo_labeled=70097
+  Sitting_With_Movement                         pseudo_labeled=24084
+  Stand_Conversation_Lab                        pseudo_labeled=466
+  Stand_Shelf_Load_Lab                          pseudo_labeled=249
+  Stand_Shelf_Unload_Lab                        pseudo_labeled=7
+  Standing_Still                                pseudo_labeled=15083
+  Standing_With_Movement                        pseudo_labeled=19438
+  Stationary_Biking_300_Lab                     pseudo_labeled=1425
+  Sweeping                                      pseudo_labeled=53
+  Treadmill_2mph_Lab                            pseudo_labeled=172
+  Treadmill_3mph_Briefcase_Lab                  pseudo_labeled=92
+  Treadmill_3mph_Conversation_Lab               pseudo_labeled=1124
+  Treadmill_3mph_Drink_Lab                      pseudo_labeled=0
+  Treadmill_3mph_Free_Walk_Lab                  pseudo_labeled=0
+  Treadmill_3mph_Hands_Pockets_Lab              pseudo_labeled=47
+  Treadmill_3mph_Phone_Lab                      pseudo_labeled=20
+  Treadmill_4mph_Lab                            pseudo_labeled=2451
+  Treadmill_5_5mph_Lab                          pseudo_labeled=56
+  Vacuuming                                     pseudo_labeled=2342
+  Walking                                       pseudo_labeled=16115
+  Walking_Down_Stairs                           pseudo_labeled=382
+  Walking_Up_Stairs                             pseudo_labeled=1455
+  Washing_Dishes_Lab                            pseudo_labeled=14955
+
+Class                                             1-F1   Direct    Oppos      α  Discrim  Benefit
+───────────────────────────────────────────────────────────────────────────────────────────────
+Walking_Down_Stairs                              0.857   0.5398   0.0383   1.00   0.5398   0.4627
+Chopping_Food_Lab                                1.000   0.3591   0.0000   1.00   0.3591   0.3591
+Stand_Conversation_Lab                           1.000   0.3414   0.3566   1.00   0.3414   0.3414
+Standing_With_Movement                           0.974   0.2274   0.0879   1.00   0.2274   0.2215
+Sitting_With_Movement                            0.900   0.2388   0.0000   1.00   0.2388   0.2149
+Sit_Recline_Talk_Lab                             1.000   0.0000   0.3025   0.30   0.2117   0.2117
+Treadmill_4mph_Lab                               0.412   0.4537   0.0694   1.00   0.4537   0.1868
+Lying_On_Left_Side_Lab                           0.714   0.2214   0.0000   1.00   0.2214   0.1581
+Sit_Writing_Lab                                  1.000   0.1262   0.0383   1.00   0.1262   0.1262
+Treadmill_2mph_Lab                               0.714   0.1554   0.0047   1.00   0.1554   0.1110
+Playing_Frisbee                                  0.846   0.1218   0.0812   1.00   0.1218   0.1031
+Standing_Still                                   1.000   0.0383   0.0000   1.00   0.0383   0.0383
+Push_Up_Lab                                      0.250   0.1166   0.0000   1.00   0.1166   0.0291
+Folding_Clothes                                  0.300   0.0575   0.0047   1.00   0.0575   0.0173
+Lying_On_Stomach_Lab                             0.091   0.1667   0.2234   1.00   0.1667   0.0152
+Sweeping                                         1.000   0.0051   0.0000   1.00   0.0051   0.0051
+Ab_Crunches_Lab                                  0.059   0.0194   0.0000   1.00   0.0194   0.0011
+Stationary_Biking_300_Lab                        0.043   0.0159   0.0015   1.00   0.0159   0.0007
+Arm_Curls_Lab                                    1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Lying_On_Back_Lab                                1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Lying_On_Right_Side_Lab                          1.000   0.0000   0.0000   0.40   0.0000   0.0000
+Machine_Leg_Press_Lab                            1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Stand_Shelf_Load_Lab                             1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Stand_Shelf_Unload_Lab                           1.000   0.0000   0.0000   0.70   0.0000   0.0000
+Treadmill_3mph_Briefcase_Lab                     1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Drink_Lab                         1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Free_Walk_Lab                     1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Hands_Pockets_Lab                 1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Phone_Lab                         1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Walking_Up_Stairs                                1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Sitting_Still                                    0.962   0.0000   0.0000   1.00   0.0000   0.0000
+Organizing_Shelf_Cabinet                         0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Recline_Web_Browse_Lab                       0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Conversation_Lab                  0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Walking                                          0.825   0.0000   0.0000   1.00   0.0000   0.0000
+Vacuuming                                        0.529   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Typing_Lab                                   0.500   0.0000   0.0000   1.00   0.0000   0.0000
+Washing_Dishes_Lab                               0.474   0.0000   0.0000   1.00   0.0000   0.0000
+Machine_Chest_Press_Lab                          0.111   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_5_5mph_Lab                             0.000   0.0000   0.0000   1.00   0.0000   0.0000
+
+Elbow at rank 4 (score=0.2215)
+Classes selected for re-annotation (4): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+  Target classes (4): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+  [cached] oracle checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+
+  Budget=4 (4 classes): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (4): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWaist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 192 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+[SensorDataset:val] 48 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+
+====================================================================================================
+  Per-class F1 comparison  (4 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.800     0.800     0.932   +0.000   +0.132       
+  Arm_Curls_Lab                                     0.977     0.977     0.955   +0.000   -0.022       
+  Chopping_Food_Lab                                 0.412     0.583     0.563   +0.171   +0.151  ◀◀◀  
+  Folding_Clothes                                   0.661     0.661     0.772   +0.000   +0.111       
+  Lying_On_Back_Lab                                 0.483     0.483     0.511   +0.000   +0.028       
+  Lying_On_Left_Side_Lab                            0.519     0.519     0.711   +0.000   +0.192       
+  Lying_On_Right_Side_Lab                           0.232     0.232     0.868   +0.000   +0.636       
+  Lying_On_Stomach_Lab                              0.832     0.832     0.901   +0.000   +0.069       
+  Machine_Chest_Press_Lab                           0.945     0.945     0.912   +0.000   -0.033       
+  Machine_Leg_Press_Lab                             0.137     0.137     0.960   +0.000   +0.823       
+  Organizing_Shelf_Cabinet                          0.667     0.667     0.863   +0.000   +0.196       
+  Playing_Frisbee                                   0.631     0.631     0.855   +0.000   +0.224       
+  Push_Up_Lab                                       0.847     0.847     0.931   +0.000   +0.084       
+  Sit_Recline_Talk_Lab                              0.155     0.155     0.297   +0.000   +0.142       
+  Sit_Recline_Web_Browse_Lab                        0.337     0.337     0.383   +0.000   +0.045       
+  Sit_Typing_Lab                                    0.715     0.715     0.744   +0.000   +0.029       
+  Sit_Writing_Lab                                   0.192     0.192     0.148   +0.000   -0.044       
+  Sitting_Still                                     0.604     0.604     0.791   +0.000   +0.187       
+  Sitting_With_Movement                             0.605     0.605     0.728   +0.000   +0.123       
+  Stand_Conversation_Lab                            0.133     0.224     0.216   +0.091   +0.083  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.473     0.473     0.816   +0.000   +0.343       
+  Stand_Shelf_Unload_Lab                            0.780     0.780     0.746   +0.000   -0.035       
+  Standing_Still                                    0.494     0.494     0.594   +0.000   +0.100       
+  Standing_With_Movement                            0.614     0.692     0.615   +0.077   +0.000  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.855     0.855     0.948   +0.000   +0.094       
+  Sweeping                                          0.689     0.689     0.837   +0.000   +0.148       
+  Treadmill_2mph_Lab                                0.876     0.876     0.816   +0.000   -0.060       
+  Treadmill_3mph_Briefcase_Lab                      0.740     0.740     0.840   +0.000   +0.100       
+  Treadmill_3mph_Conversation_Lab                   0.506     0.506     0.597   +0.000   +0.091       
+  Treadmill_3mph_Drink_Lab                          0.515     0.515     0.754   +0.000   +0.239       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.755   +0.000   +0.034       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.976   +0.000   -0.024       
+  Treadmill_3mph_Phone_Lab                          0.658     0.658     0.863   +0.000   +0.204       
+  Treadmill_4mph_Lab                                0.933     0.933     0.961   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.529     0.529     0.429   +0.000   -0.101       
+  Walking                                           0.938     0.938     0.939   +0.000   +0.002       
+  Walking_Down_Stairs                               0.876     0.983     0.932   +0.107   +0.056  ◀◀◀  
+  Walking_Up_Stairs                                 0.670     0.670     0.823   +0.000   +0.153       
+  Washing_Dishes_Lab                                0.652     0.652     0.669   +0.000   +0.017       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6351    0.6463    0.7487  +0.0112  +0.1136
+  WEIGHTED F1                                      0.6674    0.6927    0.7284  +0.0253  +0.0610
+====================================================================================================
+  → Budget=4 | Baseline=0.6351 | Proposed=0.6463 (+0.0112) | Oracle=0.7487 (+0.1136) | %Oracle=128.8%
+
+  Budget=4 (4 classes): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (4): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWaist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 192 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+[SensorDataset:val] 48 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+
+====================================================================================================
+  Per-class F1 comparison  (4 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.800     0.800     0.932   +0.000   +0.132       
+  Arm_Curls_Lab                                     0.977     0.977     0.955   +0.000   -0.022       
+  Chopping_Food_Lab                                 0.412     0.707     0.563   +0.294   +0.151  ◀◀◀  
+  Folding_Clothes                                   0.661     0.661     0.772   +0.000   +0.111       
+  Lying_On_Back_Lab                                 0.483     0.483     0.511   +0.000   +0.028       
+  Lying_On_Left_Side_Lab                            0.519     0.519     0.711   +0.000   +0.192       
+  Lying_On_Right_Side_Lab                           0.232     0.232     0.868   +0.000   +0.636       
+  Lying_On_Stomach_Lab                              0.832     0.832     0.901   +0.000   +0.069       
+  Machine_Chest_Press_Lab                           0.945     0.945     0.912   +0.000   -0.033       
+  Machine_Leg_Press_Lab                             0.137     0.137     0.960   +0.000   +0.823       
+  Organizing_Shelf_Cabinet                          0.667     0.667     0.863   +0.000   +0.196       
+  Playing_Frisbee                                   0.631     0.631     0.855   +0.000   +0.224       
+  Push_Up_Lab                                       0.847     0.847     0.931   +0.000   +0.084       
+  Sit_Recline_Talk_Lab                              0.155     0.155     0.297   +0.000   +0.142       
+  Sit_Recline_Web_Browse_Lab                        0.337     0.337     0.383   +0.000   +0.045       
+  Sit_Typing_Lab                                    0.715     0.715     0.744   +0.000   +0.029       
+  Sit_Writing_Lab                                   0.192     0.192     0.148   +0.000   -0.044       
+  Sitting_Still                                     0.604     0.604     0.791   +0.000   +0.187       
+  Sitting_With_Movement                             0.605     0.605     0.728   +0.000   +0.123       
+  Stand_Conversation_Lab                            0.133     0.209     0.216   +0.076   +0.083  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.473     0.473     0.816   +0.000   +0.343       
+  Stand_Shelf_Unload_Lab                            0.780     0.780     0.746   +0.000   -0.035       
+  Standing_Still                                    0.494     0.494     0.594   +0.000   +0.100       
+  Standing_With_Movement                            0.614     0.658     0.615   +0.044   +0.000  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.855     0.855     0.948   +0.000   +0.094       
+  Sweeping                                          0.689     0.689     0.837   +0.000   +0.148       
+  Treadmill_2mph_Lab                                0.876     0.876     0.816   +0.000   -0.060       
+  Treadmill_3mph_Briefcase_Lab                      0.740     0.740     0.840   +0.000   +0.100       
+  Treadmill_3mph_Conversation_Lab                   0.506     0.506     0.597   +0.000   +0.091       
+  Treadmill_3mph_Drink_Lab                          0.515     0.515     0.754   +0.000   +0.239       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.755   +0.000   +0.034       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.976   +0.000   -0.024       
+  Treadmill_3mph_Phone_Lab                          0.658     0.658     0.863   +0.000   +0.204       
+  Treadmill_4mph_Lab                                0.933     0.933     0.961   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.529     0.529     0.429   +0.000   -0.101       
+  Walking                                           0.938     0.938     0.939   +0.000   +0.002       
+  Walking_Down_Stairs                               0.876     0.809     0.932   -0.068   +0.056  ◀◀◀  
+  Walking_Up_Stairs                                 0.670     0.670     0.823   +0.000   +0.153       
+  Washing_Dishes_Lab                                0.652     0.652     0.669   +0.000   +0.017       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6351    0.6438    0.7487  +0.0087  +0.1136
+  WEIGHTED F1                                      0.6674    0.6835    0.7284  +0.0162  +0.0610
+====================================================================================================
+  → Budget=4 | Baseline=0.6351 | Proposed=0.6438 (+0.0087) | Oracle=0.7487 (+0.1136) | %Oracle=71.5%
+
+  Budget=4 (4 classes): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (4): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWaist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 192 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+[SensorDataset:val] 48 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+
+====================================================================================================
+  Per-class F1 comparison  (4 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.800     0.800     0.932   +0.000   +0.132       
+  Arm_Curls_Lab                                     0.977     0.977     0.955   +0.000   -0.022       
+  Chopping_Food_Lab                                 0.412     0.746     0.563   +0.334   +0.151  ◀◀◀  
+  Folding_Clothes                                   0.661     0.661     0.772   +0.000   +0.111       
+  Lying_On_Back_Lab                                 0.483     0.483     0.511   +0.000   +0.028       
+  Lying_On_Left_Side_Lab                            0.519     0.519     0.711   +0.000   +0.192       
+  Lying_On_Right_Side_Lab                           0.232     0.232     0.868   +0.000   +0.636       
+  Lying_On_Stomach_Lab                              0.832     0.832     0.901   +0.000   +0.069       
+  Machine_Chest_Press_Lab                           0.945     0.945     0.912   +0.000   -0.033       
+  Machine_Leg_Press_Lab                             0.137     0.137     0.960   +0.000   +0.823       
+  Organizing_Shelf_Cabinet                          0.667     0.667     0.863   +0.000   +0.196       
+  Playing_Frisbee                                   0.631     0.631     0.855   +0.000   +0.224       
+  Push_Up_Lab                                       0.847     0.847     0.931   +0.000   +0.084       
+  Sit_Recline_Talk_Lab                              0.155     0.155     0.297   +0.000   +0.142       
+  Sit_Recline_Web_Browse_Lab                        0.337     0.337     0.383   +0.000   +0.045       
+  Sit_Typing_Lab                                    0.715     0.715     0.744   +0.000   +0.029       
+  Sit_Writing_Lab                                   0.192     0.192     0.148   +0.000   -0.044       
+  Sitting_Still                                     0.604     0.604     0.791   +0.000   +0.187       
+  Sitting_With_Movement                             0.605     0.605     0.728   +0.000   +0.123       
+  Stand_Conversation_Lab                            0.133     0.234     0.216   +0.101   +0.083  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.473     0.473     0.816   +0.000   +0.343       
+  Stand_Shelf_Unload_Lab                            0.780     0.780     0.746   +0.000   -0.035       
+  Standing_Still                                    0.494     0.494     0.594   +0.000   +0.100       
+  Standing_With_Movement                            0.614     0.651     0.615   +0.037   +0.000  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.855     0.855     0.948   +0.000   +0.094       
+  Sweeping                                          0.689     0.689     0.837   +0.000   +0.148       
+  Treadmill_2mph_Lab                                0.876     0.876     0.816   +0.000   -0.060       
+  Treadmill_3mph_Briefcase_Lab                      0.740     0.740     0.840   +0.000   +0.100       
+  Treadmill_3mph_Conversation_Lab                   0.506     0.506     0.597   +0.000   +0.091       
+  Treadmill_3mph_Drink_Lab                          0.515     0.515     0.754   +0.000   +0.239       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.755   +0.000   +0.034       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.976   +0.000   -0.024       
+  Treadmill_3mph_Phone_Lab                          0.658     0.658     0.863   +0.000   +0.204       
+  Treadmill_4mph_Lab                                0.933     0.933     0.961   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.529     0.529     0.429   +0.000   -0.101       
+  Walking                                           0.938     0.938     0.939   +0.000   +0.002       
+  Walking_Down_Stairs                               0.876     0.327     0.932   -0.549   +0.056  ◀◀◀  
+  Walking_Up_Stairs                                 0.670     0.670     0.823   +0.000   +0.153       
+  Washing_Dishes_Lab                                0.652     0.652     0.669   +0.000   +0.017       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6351    0.6332    0.7487  -0.0019  +0.1136
+  WEIGHTED F1                                      0.6674    0.6785    0.7284  +0.0111  +0.0610
+====================================================================================================
+  → Budget=4 | Baseline=0.6351 | Proposed=0.6332 (-0.0019) | Oracle=0.7487 (+0.1136) | %Oracle=80.6%
+
+  Budget=all (4 classes): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (4): ['Walking_Down_Stairs', 'Chopping_Food_Lab', 'Stand_Conversation_Lab', 'Standing_With_Movement']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWaist']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 192 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+[SensorDataset:val] 48 windows | 4 classes | sensors=['LeftWrist', 'RightWaist']
+
+Saved → /home/hle5/sensorIL/checkpoints/incremental_classifiers.pt
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWaist']
+
+====================================================================================================
+  Per-class F1 comparison  (4 classes re-labeled for Proposed)
+====================================================================================================
+  Activity                                       Baseline  Proposed    Oracle   Δ Prop   Δ Orac  Target
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────  ──────
+  Ab_Crunches_Lab                                   0.800     0.800     0.932   +0.000   +0.132       
+  Arm_Curls_Lab                                     0.977     0.977     0.955   +0.000   -0.022       
+  Chopping_Food_Lab                                 0.412     0.768     0.563   +0.356   +0.151  ◀◀◀  
+  Folding_Clothes                                   0.661     0.661     0.772   +0.000   +0.111       
+  Lying_On_Back_Lab                                 0.483     0.483     0.511   +0.000   +0.028       
+  Lying_On_Left_Side_Lab                            0.519     0.519     0.711   +0.000   +0.192       
+  Lying_On_Right_Side_Lab                           0.232     0.232     0.868   +0.000   +0.636       
+  Lying_On_Stomach_Lab                              0.832     0.832     0.901   +0.000   +0.069       
+  Machine_Chest_Press_Lab                           0.945     0.945     0.912   +0.000   -0.033       
+  Machine_Leg_Press_Lab                             0.137     0.137     0.960   +0.000   +0.823       
+  Organizing_Shelf_Cabinet                          0.667     0.667     0.863   +0.000   +0.196       
+  Playing_Frisbee                                   0.631     0.631     0.855   +0.000   +0.224       
+  Push_Up_Lab                                       0.847     0.847     0.931   +0.000   +0.084       
+  Sit_Recline_Talk_Lab                              0.155     0.155     0.297   +0.000   +0.142       
+  Sit_Recline_Web_Browse_Lab                        0.337     0.337     0.383   +0.000   +0.045       
+  Sit_Typing_Lab                                    0.715     0.715     0.744   +0.000   +0.029       
+  Sit_Writing_Lab                                   0.192     0.192     0.148   +0.000   -0.044       
+  Sitting_Still                                     0.604     0.604     0.791   +0.000   +0.187       
+  Sitting_With_Movement                             0.605     0.605     0.728   +0.000   +0.123       
+  Stand_Conversation_Lab                            0.133     0.168     0.216   +0.035   +0.083  ◀◀◀  
+  Stand_Shelf_Load_Lab                              0.473     0.473     0.816   +0.000   +0.343       
+  Stand_Shelf_Unload_Lab                            0.780     0.780     0.746   +0.000   -0.035       
+  Standing_Still                                    0.494     0.494     0.594   +0.000   +0.100       
+  Standing_With_Movement                            0.614     0.652     0.615   +0.037   +0.000  ◀◀◀  
+  Stationary_Biking_300_Lab                         0.855     0.855     0.948   +0.000   +0.094       
+  Sweeping                                          0.689     0.689     0.837   +0.000   +0.148       
+  Treadmill_2mph_Lab                                0.876     0.876     0.816   +0.000   -0.060       
+  Treadmill_3mph_Briefcase_Lab                      0.740     0.740     0.840   +0.000   +0.100       
+  Treadmill_3mph_Conversation_Lab                   0.506     0.506     0.597   +0.000   +0.091       
+  Treadmill_3mph_Drink_Lab                          0.515     0.515     0.754   +0.000   +0.239       
+  Treadmill_3mph_Free_Walk_Lab                      0.720     0.720     0.755   +0.000   +0.034       
+  Treadmill_3mph_Hands_Pockets_Lab                  1.000     1.000     0.976   +0.000   -0.024       
+  Treadmill_3mph_Phone_Lab                          0.658     0.658     0.863   +0.000   +0.204       
+  Treadmill_4mph_Lab                                0.933     0.933     0.961   +0.000   +0.028       
+  Treadmill_5_5mph_Lab                              1.000     1.000     1.000   +0.000   +0.000       
+  Vacuuming                                         0.529     0.529     0.429   +0.000   -0.101       
+  Walking                                           0.938     0.938     0.939   +0.000   +0.002       
+  Walking_Down_Stairs                               0.876     0.235     0.932   -0.642   +0.056  ◀◀◀  
+  Walking_Up_Stairs                                 0.670     0.670     0.823   +0.000   +0.153       
+  Washing_Dishes_Lab                                0.652     0.652     0.669   +0.000   +0.017       
+  ───────────────────────────────────────────── ───────── ───────── ───────── ──────── ────────
+  MACRO F1                                         0.6351    0.6298    0.7487  -0.0053  +0.1136
+  WEIGHTED F1                                      0.6674    0.6769    0.7284  +0.0095  +0.0610
+====================================================================================================
+  → Budget=all | Baseline=0.6351 | Proposed=0.6298 (-0.0053) | Oracle=0.7487 (+0.1136) | %Oracle=60.6%
+
+[4/20] 
+──────────────────────────────────────────────────────────────────────
+  LW__plus_RA
+  Base: ['LeftWrist'] → New: ['RightAnkle']
+──────────────────────────────────────────────────────────────────────
+  [cached] base checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightAnkle']
+
+============================================================
+Step 2: Detecting confused classes
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+  83/450 windows had no classifier fire above threshold
+
+Base model val — Macro F1: 0.2862 | Weighted F1: 0.2811
+
+Class                                                  F1  Confusion  Confused with
+──────────────────────────────────────────────────────────────────────────────────────────
+Arm_Curls_Lab                                       0.000          0  
+Lying_On_Back_Lab                                   0.000         12  
+Lying_On_Right_Side_Lab                             0.000         12  Sitting_Still(1), Sitting_With_Movement(1)
+Machine_Leg_Press_Lab                               0.000          7  
+Sit_Recline_Talk_Lab                                0.000         11  Chopping_Food_Lab(1)
+Sit_Writing_Lab                                     0.000         12  Standing_Still(1)
+Sitting_With_Movement                               0.000          6  Washing_Dishes_Lab(1)
+Stand_Conversation_Lab                              0.000         12  Sitting_Still(4), Sitting_With_Movement(3), Sit_Writing_Lab(1)
+Stand_Shelf_Load_Lab                                0.000          5  
+Stand_Shelf_Unload_Lab                              0.000         11  Walking(1)
+Standing_Still                                      0.000         12  Sitting_Still(1), Standing_With_Movement(1)
+Treadmill_3mph_Briefcase_Lab                        0.000          2  
+Treadmill_3mph_Drink_Lab                            0.000         12  Treadmill_3mph_Briefcase_Lab(2), Treadmill_3mph_Phone_Lab(1)
+Treadmill_3mph_Free_Walk_Lab                        0.000         12  Treadmill_3mph_Briefcase_Lab(1)
+Treadmill_3mph_Hands_Pockets_Lab                    0.000          0  
+Treadmill_3mph_Phone_Lab                            0.000          1  
+Standing_With_Movement                              0.037         11  Standing_Still(2), Sitting_Still(2), Sit_Writing_Lab(1)
+Walking_Down_Stairs                                 0.143          3  Standing_Still(1), Standing_With_Movement(1)
+Lying_On_Left_Side_Lab                              0.154         11  Standing_Still(1)
+Playing_Frisbee                                     0.154          7  Folding_Clothes(1), Standing_Still(1)
+Sit_Recline_Web_Browse_Lab                          0.154         11  
+Sweeping                                            0.154          5  
+Treadmill_3mph_Conversation_Lab                     0.154         11  
+Walking                                             0.182          0  
+Vacuuming                                           0.267          4  
+Walking_Up_Stairs                                   0.286          1  Treadmill_3mph_Briefcase_Lab(1)
+Sitting_Still                                       0.320          0  
+Organizing_Shelf_Cabinet                            0.400          6  Walking(1)
+Sit_Typing_Lab                                      0.500          6  
+Chopping_Food_Lab                                   0.556          5  Washing_Dishes_Lab(1)
+Treadmill_4mph_Lab                                  0.588          2  Stand_Shelf_Load_Lab(1), Standing_Still(1), Treadmill_3mph_Phone_Lab(1)
+Folding_Clothes                                     0.600          3  Walking(1), Standing_With_Movement(1), Vacuuming(1)
+Push_Up_Lab                                         0.750          2  Standing_Still(1)
+Washing_Dishes_Lab                                  0.783          2  
+Treadmill_2mph_Lab                                  0.857          3  Standing_With_Movement(2), Standing_Still(1)
+Machine_Chest_Press_Lab                             0.889          1  
+Lying_On_Stomach_Lab                                0.909          2  Sitting_Still(1), Sitting_With_Movement(1)
+Ab_Crunches_Lab                                     0.941          1  Standing_With_Movement(1)
+Stationary_Biking_300_Lab                           0.957          1  Sitting_Still(1), Sitting_With_Movement(1)
+Treadmill_5_5mph_Lab                                1.000          0  
+
+All 40 classes ranked by F1 (ascending)
+
+============================================================
+Step 3: Estimating benefit of new sensor
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+Encoding FL data with known sensors (pseudo-labeling)...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+Encoding FL data with new sensor only (discriminability)...
+[UnlabeledFLDataset] 437247 windows | sensors=['RightAnkle']
+Pseudo-labeling FL data...
+  Ab_Crunches_Lab                               pseudo_labeled=514
+  Arm_Curls_Lab                                 pseudo_labeled=40
+  Chopping_Food_Lab                             pseudo_labeled=2511
+  Folding_Clothes                               pseudo_labeled=2797
+  Lying_On_Back_Lab                             pseudo_labeled=0
+  Lying_On_Left_Side_Lab                        pseudo_labeled=428
+  Lying_On_Right_Side_Lab                       pseudo_labeled=19
+  Lying_On_Stomach_Lab                          pseudo_labeled=1672
+  Machine_Chest_Press_Lab                       pseudo_labeled=21
+  Machine_Leg_Press_Lab                         pseudo_labeled=17
+  Organizing_Shelf_Cabinet                      pseudo_labeled=202
+  Playing_Frisbee                               pseudo_labeled=16
+  Push_Up_Lab                                   pseudo_labeled=188
+  Sit_Recline_Talk_Lab                          pseudo_labeled=12
+  Sit_Recline_Web_Browse_Lab                    pseudo_labeled=1334
+  Sit_Typing_Lab                                pseudo_labeled=757
+  Sit_Writing_Lab                               pseudo_labeled=542
+  Sitting_Still                                 pseudo_labeled=91765
+  Sitting_With_Movement                         pseudo_labeled=14543
+  Stand_Conversation_Lab                        pseudo_labeled=388
+  Stand_Shelf_Load_Lab                          pseudo_labeled=407
+  Stand_Shelf_Unload_Lab                        pseudo_labeled=9
+  Standing_Still                                pseudo_labeled=10263
+  Standing_With_Movement                        pseudo_labeled=9006
+  Stationary_Biking_300_Lab                     pseudo_labeled=739
+  Sweeping                                      pseudo_labeled=303
+  Treadmill_2mph_Lab                            pseudo_labeled=190
+  Treadmill_3mph_Briefcase_Lab                  pseudo_labeled=98
+  Treadmill_3mph_Conversation_Lab               pseudo_labeled=4
+  Treadmill_3mph_Drink_Lab                      pseudo_labeled=0
+  Treadmill_3mph_Free_Walk_Lab                  pseudo_labeled=0
+  Treadmill_3mph_Hands_Pockets_Lab              pseudo_labeled=36
+  Treadmill_3mph_Phone_Lab                      pseudo_labeled=119
+  Treadmill_4mph_Lab                            pseudo_labeled=2526
+  Treadmill_5_5mph_Lab                          pseudo_labeled=47
+  Vacuuming                                     pseudo_labeled=506
+  Walking                                       pseudo_labeled=14937
+  Walking_Down_Stairs                           pseudo_labeled=689
+  Walking_Up_Stairs                             pseudo_labeled=1940
+  Washing_Dishes_Lab                            pseudo_labeled=14107
+
+Class                                             1-F1   Direct    Oppos      α  Discrim  Benefit
+───────────────────────────────────────────────────────────────────────────────────────────────
+Lying_On_Left_Side_Lab                           0.846   0.4283   0.0000   1.00   0.4283   0.3624
+Stand_Conversation_Lab                           1.000   0.2427   0.1645   1.00   0.2427   0.2427
+Chopping_Food_Lab                                0.444   0.4468   0.0000   1.00   0.4468   0.1986
+Lying_On_Right_Side_Lab                          1.000   0.1715   0.0311   1.00   0.1715   0.1715
+Sit_Recline_Talk_Lab                             1.000   0.1352   0.0000   1.00   0.1352   0.1352
+Walking_Down_Stairs                              0.857   0.1127   0.0121   1.00   0.1127   0.0966
+Standing_With_Movement                           0.963   0.0941   0.0945   1.00   0.0941   0.0907
+Sit_Writing_Lab                                  1.000   0.0817   0.0000   1.00   0.0817   0.0817
+Push_Up_Lab                                      0.250   0.1993   0.0000   1.00   0.1993   0.0498
+Lying_On_Stomach_Lab                             0.091   0.5139   0.0311   1.00   0.5139   0.0467
+Standing_Still                                   1.000   0.0429   0.1253   1.00   0.0429   0.0429
+Organizing_Shelf_Cabinet                         0.600   0.0696   0.0000   1.00   0.0696   0.0417
+Playing_Frisbee                                  0.846   0.0325   0.0133   1.00   0.0325   0.0275
+Treadmill_4mph_Lab                               0.412   0.0592   0.0539   1.00   0.0592   0.0244
+Sitting_With_Movement                            1.000   0.0212   0.0000   1.00   0.0212   0.0212
+Folding_Clothes                                  0.400   0.0354   0.1002   1.00   0.0354   0.0142
+Treadmill_3mph_Drink_Lab                         1.000   0.0000   0.0111   0.00   0.0111   0.0111
+Treadmill_2mph_Lab                               0.143   0.0406   0.0121   1.00   0.0406   0.0058
+Walking_Up_Stairs                                0.714   0.0064   0.0000   1.00   0.0064   0.0045
+Ab_Crunches_Lab                                  0.059   0.0739   0.0000   1.00   0.0739   0.0043
+Stationary_Biking_300_Lab                        0.043   0.0931   0.0311   1.00   0.0931   0.0040
+Arm_Curls_Lab                                    1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Lying_On_Back_Lab                                1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Machine_Leg_Press_Lab                            1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Stand_Shelf_Load_Lab                             1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Stand_Shelf_Unload_Lab                           1.000   0.0000   0.0000   0.90   0.0000   0.0000
+Treadmill_3mph_Briefcase_Lab                     1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Free_Walk_Lab                     1.000   0.0000   0.0000   0.00   0.0000   0.0000
+Treadmill_3mph_Hands_Pockets_Lab                 1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Phone_Lab                         1.000   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Recline_Web_Browse_Lab                       0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Sweeping                                         0.846   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_3mph_Conversation_Lab                  0.846   0.0000   0.0000   0.40   0.0000   0.0000
+Walking                                          0.818   0.0000   0.0000   1.00   0.0000   0.0000
+Vacuuming                                        0.733   0.0000   0.0000   1.00   0.0000   0.0000
+Sitting_Still                                    0.680   0.0000   0.0000   1.00   0.0000   0.0000
+Sit_Typing_Lab                                   0.500   0.0000   0.0000   1.00   0.0000   0.0000
+Washing_Dishes_Lab                               0.217   0.0000   0.0000   1.00   0.0000   0.0000
+Machine_Chest_Press_Lab                          0.111   0.0000   0.0000   1.00   0.0000   0.0000
+Treadmill_5_5mph_Lab                             0.000   0.0000   0.0000   1.00   0.0000   0.0000
+
+Elbow at rank 6 (score=0.0966)
+Classes selected for re-annotation (6): ['Lying_On_Left_Side_Lab', 'Stand_Conversation_Lab', 'Chopping_Food_Lab', 'Lying_On_Right_Side_Lab', 'Sit_Recline_Talk_Lab', 'Walking_Down_Stairs']
+  Target classes (6): ['Lying_On_Left_Side_Lab', 'Stand_Conversation_Lab', 'Chopping_Food_Lab', 'Lying_On_Right_Side_Lab', 'Sit_Recline_Talk_Lab', 'Walking_Down_Stairs']
+  [cached] oracle checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightAnkle']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:all] 10673 windows | 40 classes | sensors=['LeftWrist', 'RightAnkle']
+
+  Budget=5 (5 classes): ['Lying_On_Left_Side_Lab', 'Stand_Conversation_Lab', 'Chopping_Food_Lab', 'Lying_On_Right_Side_Lab', 'Sit_Recline_Talk_Lab']
+
+============================================================
+Step 5: Incremental fine-tuning
+============================================================
+Target classes (5): ['Lying_On_Left_Side_Lab', 'Stand_Conversation_Lab', 'Chopping_Food_Lab', 'Lying_On_Right_Side_Lab', 'Sit_Recline_Talk_Lab']
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+
+Building FL cluster index...
+  Encoding FL data with known sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+  Encoding FL data with all sensors...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightAnkle']
+  Clustering into 40 clusters...
+  Cluster sizes: min=1626 max=53724 mean=10931
+
+Computing P(class A) for FL windows...
+
+Encoding new labeled data (n+1 sensors)...
+[SensorDataset:train] 240 windows | 5 classes | sensors=['LeftWrist', 'RightAnkle']
+[SensorDataset:val] 60 windows | 5 classes | sensors=['LeftWrist', 'RightAnkle']

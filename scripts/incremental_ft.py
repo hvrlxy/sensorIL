@@ -27,7 +27,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
-from sklearn.cluster import MiniBatchKMeans
+from train_base import ParallelBinaryClassifiers
 
 from simclr_encoder import load_simclr_encoder, encode_sensors, ENCODER_DIM
 from dataset import SensorDataset, UnlabeledFLDataset
@@ -36,14 +36,23 @@ from cooccurrence import get_multilabel, are_related, get_ancestors, get_all_rel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FL cluster index
+# FL pseudo-label index
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_fl_cluster_index(encoder, config, device,
-                           n_clusters=40, batch_size=512):
+def build_fl_pseudolabel_index(encoder, config, base_ckpt, device,
+                                batch_size=512):
+    """
+    Encode FL data and pseudo-label each window using the base classifiers.
+    Returns:
+      z_fl_known:      (N, known_dim) embeddings with known sensors
+      z_fl_full:       (N, full_dim)  embeddings with all sensors
+      pseudo_labels:   (N,) long tensor — argmax class assignment
+      all_scores:      (N, n_classes) float — per-class probabilities
+    """
     known_sensors = config["sensors"]["known_sensors"]
     new_sensor    = config["sensors"]["new_sensor"]
     all_sensors   = known_sensors + new_sensor
+    input_dim     = len(known_sensors) * ENCODER_DIM
 
     print("  Encoding FL data with known sensors...")
     fl_known = UnlabeledFLDataset(config["data"]["unlabeled_dir"], known_sensors)
@@ -61,57 +70,154 @@ def build_fl_cluster_index(encoder, config, device,
         all_z2.append(encode_sensors(encoder, x, device).cpu())
     z_fl_full = torch.cat(all_z2)
 
-    print(f"  Clustering into {n_clusters} clusters...")
-    kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42,
-                             batch_size=4096, n_init=3, max_iter=100)
-    cluster_labels = torch.tensor(
-        kmeans.fit_predict(z_fl_known.numpy()), dtype=torch.long
+    # Pseudo-label using base classifiers — vectorized over all classes at once
+    print("  Pseudo-labeling FL data with base classifiers (vectorized)...")
+    ckpt        = torch.load(base_ckpt, map_location=device)
+    class_names = ckpt["class_names"]
+    n_classes   = len(class_names)
+    input_dim_ckpt = ckpt.get("input_dim", input_dim)
+
+    # Stack all classifier weights into a single batched linear op
+    # Shape: (n_classes, hidden) then (hidden, 1) → vectorized over classes
+    # Use ParallelBinaryClassifiers if available, else fallback to sequential
+    z_dev      = z_fl_known.to(device)
+    bs         = 4096
+    all_scores_list = []
+
+    with torch.no_grad():
+        # Load all classifiers at once
+        clfs = []
+        for name in class_names:
+            idim = ckpt.get("input_dims", {}).get(name, input_dim_ckpt)
+            clf  = BinaryClassifier(idim).to(device)
+            clf.load_state_dict(ckpt["classifiers"][name])
+            clf.eval()
+            clfs.append(clf)
+
+        # Batched scoring: process all classifiers per chunk
+        for start in range(0, len(z_fl_known), bs):
+            chunk  = z_dev[start:start+bs]
+            scores_chunk = torch.stack(
+                [torch.sigmoid(clf(chunk)) for clf in clfs], dim=1
+            )  # (chunk_size, n_classes)
+            all_scores_list.append(scores_chunk.cpu())
+
+    all_scores = torch.cat(all_scores_list).numpy()  # (N, n_classes)
+
+    pseudo_labels = torch.tensor(all_scores.argmax(axis=1), dtype=torch.long)
+
+    counts = [(pseudo_labels == k).sum().item() for k in range(n_classes)]
+    nonzero = sum(1 for c in counts if c > 0)
+    print(f"  Pseudo-labeled: {nonzero}/{n_classes} classes present in FL data")
+    print(f"  Top-5 pseudo-labeled classes:")
+    top5 = sorted(enumerate(counts), key=lambda x: -x[1])[:5]
+    for idx, cnt in top5:
+        print(f"    {class_names[idx]:45s} {cnt}")
+
+    return z_fl_known, z_fl_full, pseudo_labels, \
+           torch.tensor(all_scores), class_names
+
+
+def build_shared_negative_pool(z_fl_full, pseudo_labels, p_all_classes,
+                                total_budget, filter_threshold=0.3):
+    """
+    Pre-compute a shared negative pool with fixed proportions per
+    pseudo-label group. All target classes sample from this same pool,
+    differing only in which groups are excluded for each class.
+    This ensures consistent negative distribution across all target classes.
+
+    Returns:
+        pool_z:      (M, full_dim)
+        pool_labels: (M,)           pseudo-label per window
+        pool_weights:(M, n_classes) 1 - P(c | x) per window per class
+    """
+    # Keep only confidently pseudo-labeled windows
+    max_conf = p_all_classes.max(dim=1).values
+    mask     = max_conf > filter_threshold
+    if mask.sum() < 1000:
+        mask = torch.ones(len(pseudo_labels), dtype=torch.bool)
+
+    pool_z       = z_fl_full[mask]
+    pool_labels  = pseudo_labels[mask]
+    pool_weights = 1.0 - p_all_classes[mask]  # (M, n_classes)
+
+    # Subsample proportionally to group size
+    N              = len(pool_z)
+    unique, counts = pool_labels.unique(return_counts=True)
+    sampled_idx    = []
+
+    for k, cnt in zip(unique.tolist(), counts.tolist()):
+        group_idx = torch.where(pool_labels == k)[0]
+        budget    = max(1, round(total_budget * cnt / N))
+        chosen    = group_idx[torch.randperm(len(group_idx))[:budget]]
+        sampled_idx.append(chosen)
+
+    idx = torch.cat(sampled_idx)
+    return pool_z[idx], pool_labels[idx], pool_weights[idx]
+
+
+def sample_diverse_negatives(pool_z, pool_labels, pool_weights,
+                              class_idx, related_class_ids=None):
+    """
+    For a specific target class, filter the shared pool to exclude
+    windows pseudo-labeled as that class or any related class.
+    PU weight = 1 - P(class_a | x) from pool_weights[:, class_idx].
+    """
+    exclude = {class_idx}
+    if related_class_ids:
+        exclude.update(related_class_ids)
+
+    keep = torch.ones(len(pool_labels), dtype=torch.bool)
+    for rid in exclude:
+        keep &= (pool_labels != rid)
+
+    if keep.sum() == 0:
+        return torch.zeros(0, pool_z.shape[1]), torch.zeros(0)
+
+    return pool_z[keep], pool_weights[keep, class_idx]
+
+
+
+def build_fl_index(config, base_ckpt_path, encoder, device):
+    """Build FL pseudo-label index and shared negative pool once,
+    to be reused across multiple budget runs."""
+    from train_base import BinaryClassifier
+    import torch
+
+    known_sensors = config["sensors"]["known_sensors"]
+    n_known       = len(known_sensors)
+    input_dim     = n_known * ENCODER_DIM
+
+    ckpt        = torch.load(base_ckpt_path, map_location=device)
+    class_names = ckpt["class_names"]
+    n_classes   = len(class_names)
+    few_shot    = config["finetune"]["few_shot_samples_per_class"]
+
+    z_fl_known, z_fl_full, pseudo_labels, all_fl_scores, fl_class_names = \
+        build_fl_pseudolabel_index(encoder, config, base_ckpt_path, device)
+
+    neg_budget_pool = (n_classes - 1) * few_shot
+    pool_z, pool_labels, pool_weights = build_shared_negative_pool(
+        z_fl_full, pseudo_labels, all_fl_scores,
+        total_budget=neg_budget_pool, filter_threshold=0.3,
     )
-    counts = [(cluster_labels == k).sum().item() for k in range(n_clusters)]
-    print(f"  Cluster sizes: min={min(counts)} max={max(counts)} "
-          f"mean={np.mean(counts):.0f}")
-
-    return z_fl_known, z_fl_full, cluster_labels
-
-
-def sample_diverse_negatives(z_fl_full, cluster_labels, p_class_a,
-                              total_budget, filter_threshold=0.3,
-                              n_clusters=40):
-    mask = p_class_a < filter_threshold
-    if mask.sum() < 10:
-        mask = p_class_a < 0.5
-
-    z_f      = z_fl_full[mask]
-    labels_f = cluster_labels[mask]
-    weights  = 1.0 - p_class_a[mask]
-
-    N = len(z_f)
-    if N == 0:
-        return torch.zeros(0, z_fl_full.shape[1]), torch.zeros(0)
-
-    sampled_z, sampled_w = [], []
-    for k in range(n_clusters):
-        cm = labels_f == k
-        if cm.sum() == 0:
-            continue
-        budget = max(1, round(total_budget * cm.sum().item() / N))
-        z_k    = z_f[cm]
-        w_k    = weights[cm]
-        idx    = torch.randperm(len(z_k))[:budget] if len(z_k) >= budget \
-                 else torch.randint(0, len(z_k), (budget,))
-        sampled_z.append(z_k[idx])
-        sampled_w.append(w_k[idx])
-
-    if not sampled_z:
-        return torch.zeros(0, z_fl_full.shape[1]), torch.zeros(0)
-    return torch.cat(sampled_z), torch.cat(sampled_w)
+    print(f"  Shared pool size: {len(pool_z)}")
+    return (z_fl_known, z_fl_full, pseudo_labels, all_fl_scores,
+            fl_class_names, pool_z, pool_labels, pool_weights)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-def incremental_ft(config, base_ckpt_path, target_classes, device, verbose=True):
+def incremental_ft(config, base_ckpt_path, target_classes, device,
+                   verbose=True, fl_index=None):
+    """
+    fl_index: optional pre-built tuple of
+              (z_fl_known, z_fl_full, pseudo_labels, all_fl_scores, fl_class_names,
+               pool_z, pool_labels, pool_weights)
+              Pass this to avoid recomputing the FL index for each budget.
+    """
     print(f"\n{'='*60}")
     print(f"Step 5: Incremental fine-tuning")
     print(f"{'='*60}")
@@ -121,7 +227,6 @@ def incremental_ft(config, base_ckpt_path, target_classes, device, verbose=True)
     new_sensor    = config["sensors"]["new_sensor"]
     all_sensors   = known_sensors + new_sensor
     n_known       = len(known_sensors)
-    n_clusters    = config.get("active_learning", {}).get("n_clusters", 40)
 
     input_dim_known = n_known * ENCODER_DIM
     input_dim_full  = (n_known + 1) * ENCODER_DIM
@@ -143,27 +248,25 @@ def incremental_ft(config, base_ckpt_path, target_classes, device, verbose=True)
         classifiers[name] = clf
         input_dims[name]  = idim
 
-    # Build FL cluster index
-    print("\nBuilding FL cluster index...")
-    z_fl_known, z_fl_full, cluster_labels = build_fl_cluster_index(
-        encoder, config, device, n_clusters=n_clusters
-    )
+    # Build FL pseudo-label index — reuse if pre-built
+    if fl_index is not None:
+        z_fl_known, z_fl_full, pseudo_labels, all_fl_scores, fl_class_names, \
+            pool_z, pool_labels, pool_weights = fl_index
+        print("  [cached] FL pseudo-label index")
+    else:
+        print("\nBuilding FL pseudo-label index...")
+        z_fl_known, z_fl_full, pseudo_labels, all_fl_scores, fl_class_names = \
+            build_fl_pseudolabel_index(encoder, config, base_ckpt_path, device)
 
-    # Compute P(class A) on FL data for each target class (batched)
-    print("\nComputing P(class A) for FL windows...")
-    p_class    = {}
-    bs         = 4096
-    z_fl_dev   = z_fl_known.to(device)
-    with torch.no_grad():
-        for name in target_classes:
-            if name not in classifiers:
-                continue
-            clf_scores = []
-            for start in range(0, len(z_fl_known), bs):
-                clf_scores.append(
-                    torch.sigmoid(classifiers[name](z_fl_dev[start:start+bs])).cpu()
-                )
-            p_class[name] = torch.cat(clf_scores)
+        few_shot_tmp    = config["finetune"]["few_shot_samples_per_class"]
+        neg_budget_pool = (len(class_names) - 1) * few_shot_tmp
+        print("\nBuilding shared negative pool...")
+        pool_z, pool_labels, pool_weights = build_shared_negative_pool(
+            z_fl_full, pseudo_labels, all_fl_scores,
+            total_budget     = neg_budget_pool,
+            filter_threshold = 0.3,
+        )
+        print(f"  Shared pool size: {len(pool_z)}")
 
     # Encode new labeled data (n+1 sensors) for target classes
     print("\nEncoding new labeled data (n+1 sensors)...")
@@ -213,7 +316,6 @@ def incremental_ft(config, base_ckpt_path, target_classes, device, verbose=True)
     y_ml_new_val   = ml_matrix[y_new_val]     # (N_val,   n_classes)
 
     few_shot   = config["finetune"]["few_shot_samples_per_class"]
-    neg_budget = (n_classes - 1) * few_shot
     epochs     = config["finetune"]["epochs"]
     focal_loss = FocalLoss(alpha=0.25, gamma=2.0)
 
@@ -241,14 +343,14 @@ def incremental_ft(config, base_ckpt_path, target_classes, device, verbose=True)
         z_neg_certain    = z_new_train[neg_certain_mask].to(device)
         if verbose: print(f"    Certain negatives (unrelated target classes): {len(z_neg_certain)}")
 
-        # Uncertain negatives: diverse FL pseudo-negatives
-        fl_neg_budget = max(0, neg_budget - len(z_neg_certain))
+        # Uncertain negatives: from shared pool, exclude target + related classes
+        # All target classes see same activity distribution in their negatives
+        related_ids      = {class_names.index(c) for c in get_all_related(class_name)
+                            if c in class_names}
         z_neg_fl, weights_fl = sample_diverse_negatives(
-            z_fl_full, cluster_labels,
-            p_class[class_name],
-            total_budget     = fl_neg_budget,
-            filter_threshold = 0.3,
-            n_clusters       = n_clusters
+            pool_z, pool_labels, pool_weights,
+            class_idx         = global_id,
+            related_class_ids = related_ids,
         )
         if verbose: print(f"    Uncertain negatives (FL diverse): {len(z_neg_fl)}")
 

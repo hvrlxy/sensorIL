@@ -10,6 +10,8 @@ datasets/
 checkpoints/
 output/*
 results/
+checkpoints_test/
 wandb/
+plots/*
 __pycache__/
 *.pyc
