@@ -21,8 +21,8 @@
         "batch_size": 64,
         "lr": 0.001,
         "weight_decay": 0.0001,
-        "few_shot_samples_per_class": 60,
-        "val_split": 0.2
+        "few_shot_samples_per_class": 90,
+        "val_split": 0.3
     },
     "active_learning": {
         "top_k_confused": 15,

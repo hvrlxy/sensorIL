@@ -1,0 +1,78 @@
+Logging to: /home/hle5/sensorIL/logs/ablation_sensor_n1_b5_10_15_all_20260524_162046.log
+Started: 2026-05-24T16:20:46.813896
+
+======================================================================
+  Running n_base=1: 20 configs
+======================================================================
+
+[1/20] 
+──────────────────────────────────────────────────────────────────────
+  LW__plus_RW
+  Base: ['LeftWrist'] → New: ['RightWrist']
+──────────────────────────────────────────────────────────────────────
+  [cached] base checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 976 windows | 40 classes | sensors=['LeftWrist']
+[SensorDataset:val] 976 windows | 40 classes | sensors=['LeftWrist', 'RightWrist']
+
+============================================================
+Step 2: Detecting confused classes
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 976 windows | 40 classes | sensors=['LeftWrist']
+
+Base model val — Macro F1: 0.6037 | Weighted F1: 0.6910
+
+Class                                               F1  Confusion  Confused with
+──────────────────────────────────────────────────────────────────────────────────────────
+Walking                                          0.927        328   Standing_Still(3), Standing_With_Movement(2)
+Standing_With_Movement                           0.730        124   Standing_Still(6), Sitting_With_Movement(6)
+Sitting_Still                                    0.725        100   Sitting_With_Movement(1), Stationary_Biking_300_Lab(1)
+Sitting_With_Movement                            0.672         95   Standing_Still(4), Walking(1)
+Standing_Still                                   0.692         87   Sitting_With_Movement(7), Sitting_Still(3)
+Lying_On_Right_Side_Lab                          0.133         21   Sitting_With_Movement(19), Standing_Still(1)
+Stand_Conversation_Lab                           0.235         18   Sitting_With_Movement(6), Sitting_Still(4)
+Lying_On_Left_Side_Lab                           0.138         17   Sitting_With_Movement(7), Lying_On_Back_Lab(4)
+Lying_On_Back_Lab                                0.000         16   Sitting_With_Movement(5), Standing_Still(1)
+Vacuuming                                        0.680          7   Washing_Dishes_Lab(2), Standing_Still(2)
+Chopping_Food_Lab                                0.600          6   Lying_On_Right_Side_Lab(1), Stand_Conversation_Lab(1)
+Folding_Clothes                                  0.766          6   Walking(3), Standing_With_Movement(1)
+Sit_Writing_Lab                                  0.071          6   Standing_Still(3), Vacuuming(1)
+Stationary_Biking_300_Lab                        0.880          6   Sitting_With_Movement(2), Standing_With_Movement(1)
+Organizing_Shelf_Cabinet                         0.578          5   Walking(3), Ab_Crunches_Lab(1)
+Machine_Leg_Press_Lab                            0.000          4   
+Sit_Recline_Talk_Lab                             0.000          4   Standing_With_Movement(1), Sit_Typing_Lab(1)
+Washing_Dishes_Lab                               0.889          4   Walking(1), Chopping_Food_Lab(1)
+Ab_Crunches_Lab                                  0.867          3   Standing_With_Movement(1)
+Push_Up_Lab                                      0.857          3   Standing_With_Movement(1), Standing_Still(1)
+Sit_Typing_Lab                                   0.667          3   
+Treadmill_3mph_Briefcase_Lab                     0.526          2   Standing_With_Movement(2)
+Treadmill_4mph_Lab                               0.941          2   Standing_With_Movement(2)
+Lying_On_Stomach_Lab                             0.963          1   Sitting_With_Movement(1)
+Stand_Shelf_Load_Lab                             0.690          1   
+Stand_Shelf_Unload_Lab                           0.821          1   Walking(1)
+Treadmill_2mph_Lab                               0.943          1   Standing_With_Movement(1)
+Arm_Curls_Lab                                    1.000          0   
+Machine_Chest_Press_Lab                          0.923          0   
+Playing_Frisbee                                  0.731          0   
+Sit_Recline_Web_Browse_Lab                       0.432          0   
+Sweeping                                         0.500          0   
+Treadmill_3mph_Conversation_Lab                  0.138          0   
+Treadmill_3mph_Drink_Lab                         0.000          0   
+Treadmill_3mph_Free_Walk_Lab                     0.071          0   
+Treadmill_3mph_Hands_Pockets_Lab                 1.000          0   
+Treadmill_3mph_Phone_Lab                         0.815          0   
+Treadmill_5_5mph_Lab                             1.000          0   
+Walking_Down_Stairs                              0.898          0   
+Walking_Up_Stairs                                0.650          0   
+
+Top 15 confused classes: ['Walking', 'Standing_With_Movement', 'Sitting_Still', 'Sitting_With_Movement', 'Standing_Still', 'Lying_On_Right_Side_Lab', 'Stand_Conversation_Lab', 'Lying_On_Left_Side_Lab', 'Lying_On_Back_Lab', 'Vacuuming', 'Chopping_Food_Lab', 'Folding_Clothes', 'Sit_Writing_Lab', 'Stationary_Biking_300_Lab', 'Organizing_Shelf_Cabinet']
+
+============================================================
+Step 3: Estimating benefit of new sensor
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+Encoding FL data with known sensors (pseudo-labeling)...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist']
+Encoding FL data with new sensor only (discriminability)...
+[UnlabeledFLDataset] 437247 windows | sensors=['RightWrist']

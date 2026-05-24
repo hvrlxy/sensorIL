@@ -10,19 +10,41 @@ The key observation is that the new sensor is **not equally useful for all activ
 
 ---
 
-## Core Contribution: Benefit-Guided Active Annotation
+## Technical Contributions
 
-The central question is: **for which activities should we request new labeled data?**
+We make two distinct contributions that together explain why the proposed approach consistently outperforms the oracle (which retrains all classes with full new labels):
 
-We answer this with a benefit score that captures two complementary signals:
+### Contribution 1: Benefit-Guided Active Annotation
+
+We introduce a **benefit score** that identifies which activities will actually improve from adding the new sensor, without requiring any new labeled data. The oracle retrains everything — including classes where the new sensor hurts or adds noise. By selectively retraining only beneficial classes, the proposed approach avoids these degradations.
+
+### Contribution 2: PU Learning with Diverse Unlabeled Negatives
+
+Given the selected classes, we propose a training strategy that exploits the large unlabeled paired dataset as a source of diverse negatives. The oracle retrains with fully labeled data using standard supervised training. We instead use the unlabeled $n+1$-sensor pool as a rich negative source with uncertainty weighting — enabling better-calibrated classifiers with fewer labeled samples.
+
+These contributions are complementary but independently valuable, as shown by the ablation:
+
+| Condition | Selection | Training | Result |
+|-----------|-----------|----------|--------|
+| Baseline | — | $n$ sensors | lowest |
+| Oracle | all $m$ classes | $n+1$, full labels | good but noisy |
+| Ablation A | elbow only | standard (no PU) | tests Contribution 1 |
+| Ablation B | all classes | PU + FL negatives | tests Contribution 2 |
+| **Proposed** | **elbow** | **PU + FL negatives** | **best** |
+
+---
+
+## Contribution 1: Benefit Score
+
+The benefit score combines two signals:
 
 $$\text{benefit}(A) = (1 - F_1(A)) + \text{discriminability}(A)$$
 
-The additive formulation is deliberate — discriminability **boosts** the ranking of classes that are both confused and separable by the new sensor, rather than suppressing classes with only one signal.
+The additive formulation is deliberate — discriminability **boosts** classes with new sensor evidence rather than suppressing classes with only one signal.
 
 ### Confusion Signal
 
-$1 - F_1(A)$ measures how much the existing $n$-sensor system struggles with class $A$, computed on a held-out validation set. Crucially, we use the **binary classifier output** rather than the confusion matrix: a window of class $A$ is "confused" if $A$'s classifier does not fire, regardless of what other classifiers predict. This correctly handles the case where $A$'s windows are absorbed by dominant classes rather than explicitly misclassified.
+$1 - F_1(A)$ measures how much the existing $n$-sensor system struggles with class $A$, computed on a held-out validation set. We use the **binary classifier output** rather than the confusion matrix: a window of class $A$ is "confused" if $A$'s classifier does not fire, regardless of what other classifiers predict. This correctly handles the case where $A$'s windows are absorbed by dominant classes rather than explicitly misclassified.
 
 ### New Sensor Discriminability
 
@@ -36,87 +58,97 @@ where $\alpha = \min(1, N_{\text{pseudo}} / N_{\min})$ controls the blend based 
 
 $$d_{\text{direct}}(A) = \frac{1}{|\mathcal{N}(A)|} \sum_{B \in \mathcal{N}(A)} d\!\left(\bar{e}^{\text{new}}_A,\ \bar{e}^{\text{new}}_B\right)$$
 
-**Opposition discriminability** handles the case where $A$ has no pseudo-labels (e.g. the activity is rare or absent from the unlabeled pool). Instead of measuring $A$'s own new-sensor embedding, we measure how well-separated $A$'s confusion targets are from each other in new-sensor space:
+**Opposition discriminability** handles the case where $A$ has few or no pseudo-labels (e.g. the activity is rare or absent from the unlabeled pool). Instead of measuring $A$'s own new-sensor embedding, we measure how well-separated $A$'s confusion targets are from each other in new-sensor space:
 
 $$d_{\text{opposition}}(A) = \frac{1}{\binom{|\mathcal{N}(A)|}{2}} \sum_{B \neq C \in \mathcal{N}(A)} d\!\left(\bar{e}^{\text{new}}_B,\ \bar{e}^{\text{new}}_C\right)$$
 
 If the new sensor separates $A$'s neighborhood well, it will also help discriminate $A$ itself — even without directly observing $A$ in the unlabeled data.
 
-### Special Case: Completely Unrecognized Classes
+### Class Selection via Elbow Detection
 
-When $F_1(A) = 0$ (the base model never correctly predicts $A$), discriminability cannot be estimated from either direct or opposition signals because $A$'s confusion targets may also be absent or unreliable. In this case we fall back to the confusion signal alone:
-
-$$\text{benefit}(A) = 1 - F_1(A) = 1.0 \quad \text{if } F_1(A) = 0 \text{ and } \text{confusion\_score}(A) > 0$$
-
-This handles activities where the new sensor covers a completely different body region — the gain is real but cannot be estimated from FL data alone.
+The benefit score induces a ranking of all classes. Rather than using a fixed threshold, we use **elbow detection** on the sorted benefit score curve: the point of maximum curvature identifies the natural cutoff where marginal benefit drops sharply. This is self-adaptive — it selects fewer classes when the score distribution drops off quickly and more when there is a long tail of genuinely beneficial classes.
 
 ---
 
-## Incremental Fine-Tuning with Provable Independence
+## Contribution 2: PU Learning with Diverse FL Negatives
 
-Once new labels are obtained for the selected classes, each targeted classifier is retrained with a larger input (including the new sensor). The central challenge is constructing an appropriate training set — what are the negatives for a targeted class when most labeled data does not include the new sensor?
+Once new labels are obtained for the selected classes, we retrain each targeted classifier using the large unlabeled paired dataset as a negative source.
 
-We propose a **Positive-Unlabeled (PU) learning formulation**:
+### Training Set Construction
 
-- **Certain positives**: new labeled windows of the targeted class ($n+1$ sensors)
-- **Certain negatives**: new labeled windows of other targeted classes that are unrelated in the activity hierarchy
-- **Uncertain negatives**: pseudo-negatives sampled from the unlabeled $n+1$-sensor pool, weighted by confidence $w = 1 - P(\text{class} \mid x)$
+For each targeted class $A$:
 
-The uncertainty weighting is crucial: unlabeled windows where the base classifier is unsure whether they belong to the targeted class contribute less to the negative gradient, preventing the classifier from being misled by mislabeled pseudo-negatives.
+- **Certain positives**: new labeled windows of class $A$ ($n+1$ sensors)
+- **Certain negatives**: new labeled windows of other targeted classes unrelated to $A$ in the activity hierarchy
+- **Uncertain negatives**: pseudo-negatives sampled from a **shared negative pool** built from the unlabeled $n+1$-sensor data, weighted by $w = 1 - P(A \mid x)$
 
-To ensure diversity in the unlabeled negatives — avoiding dominance by the most common activities — we perform **stratified sampling via K-means clustering** ($K=40$) on the $n$-sensor embedding space, sampling proportionally from each cluster.
+### PU Learning Formulation
+
+The uncertain negatives use a **weighted focal loss** where FL windows that might belong to class $A$ contribute less to the negative gradient:
+
+$$\mathcal{L} = \mathcal{L}_{\text{pos}} + \mathcal{L}_{\text{certain neg}} + \sum_j w_j \cdot \mathcal{L}_{\text{neg}}(x_j)$$
+
+This handles the unknown label problem: if the base classifier is uncertain whether a FL window belongs to class $A$, it gets down-weighted rather than treated as a hard negative.
+
+### Pseudo-Label Stratified Negative Sampling
+
+Rather than blind K-means clustering on the embedding space, we use the base classifiers to **pseudo-label each FL window** by predicted activity, then build a shared negative pool by sampling proportionally from each pseudo-labeled group.
+
+This has two key advantages:
+
+1. **Semantic diversity**: the pool covers all activities present in the FL data (Walking, Standing, Treadmill variants, etc.), ensuring the retrained classifier sees realistic negative examples from across the activity distribution.
+2. **Consistent negative distribution**: all targeted classifiers sample from the same shared pool, differing only in which groups are excluded. For class $A$, windows pseudo-labeled as $A$ or any hierarchically related class (parents and children) are excluded before sampling, ensuring negatives are always semantically unrelated to $A$.
+
+The PU weight $w = 1 - P(A \mid x)$ is computed from the same pseudo-labeling pass used to build the pool, so no additional inference is required at sampling time.
 
 ### Independence Guarantee
 
-A critical design requirement is that retraining targeted classifiers must not degrade non-targeted classes. We achieve this through independent binary classification: each class has its own classifier, and **non-targeted classifiers are completely frozen** during incremental fine-tuning. Evaluation uses per-class binary F1 with multi-label ground truth (e.g. a Treadmill window is positive for both Treadmill and Walking), ensuring that a change in one classifier cannot mathematically affect another class's metric.
-
-### Threshold Calibration
-
-After retraining, per-class thresholds are calibrated on the validation set by grid search over $[0.2, 0.8]$, maximizing binary F1 per class. The $[0.2, 0.8]$ clip prevents degenerate thresholds that would cause all or no windows to fire.
+Non-targeted classifiers are completely frozen — their weights, thresholds, and input dimensions are unchanged. Evaluation uses independent per-class binary F1 with multi-label ground truth, so changing one classifier mathematically cannot affect another class's metric.
 
 ---
 
 ## Evaluation Protocol
 
-We evaluate three conditions:
+| Condition | Sensors | New labels | Description |
+|-----------|---------|------------|-------------|
+| **Baseline** | $n$ | 0 | existing system |
+| **Proposed** | $n+1$ | $K$ (elbow) | our approach |
+| **Oracle** | $n+1$ | $m$ (all) | upper bound |
 
-| Condition | Sensors at test time | New labels |
-|-----------|---------------------|------------|
-| **Baseline** | $n$ sensors | 0 |
-| **Proposed** | $n+1$ sensors | $K$ (auto-selected) |
-| **Oracle** | $n+1$ sensors | $m$ (all classes) |
+Metrics: independent per-class binary F1, macro F1, weighted F1.
 
-**Key insight**: the proposed approach can and often does **beat the oracle**, because the oracle retrains all $m$ classes including those that do not benefit from the new sensor (or actively degrade), while the proposed method selectively retrains only classes with positive benefit scores.
+---
 
-**Metrics**: independent per-class binary F1 with multi-label ground truth, macro F1 and weighted F1. Per-class F1 is computed independently — changing one classifier cannot affect another class's metric.
+## Limitations
+
+The approach works best when:
+- The new sensor covers a **different body region** from the base sensors
+- The base model has **room for improvement** (macro F1 < 0.75)
+- The unlabeled FL data **covers the activity space**
+
+Performance is limited when:
+- The base model is already strong and the new sensor is redundant
+- The val set is small, giving noisy F1 estimates for the confusion signal
+- Targeted classes are semantic siblings where the new sensor doesn't discriminate between them (e.g. treadmill variants at the same speed)
 
 ---
 
 ## Sensor Configuration Ablation
 
-We ablate over all possible combinations of base sensors and new sensors from the 5-sensor set {LeftWrist, RightWrist, RightThigh, RightWaist, RightAnkle}:
-
-| n_base | Configs | Description |
-|--------|---------|-------------|
-| 1 → +1 | 20 | $\binom{5}{1} \times 4$ |
-| 2 → +1 | 30 | $\binom{5}{2} \times 3$ |
-| 3 → +1 | 20 | $\binom{5}{3} \times 2$ |
-| 4 → +1 | 5  | $\binom{5}{4} \times 1$ |
-
-**Total**: 75 configurations. Each config is evaluated at annotation budgets $K \in \{5, 10, 15, \text{all}\}$.
+We ablate over all 75 possible combinations of base sensors and new sensors from {LeftWrist, RightWrist, RightThigh, RightWaist, RightAnkle}, grouped by number of base sensors (1–4). Each config is evaluated at annotation budgets $K \in \{5, 10, 15, \text{elbow}\}$.
 
 ---
 
 ## Benefit Score Validation
 
-After the sensor ablation, we empirically validate the benefit score by computing Spearman correlation between benefit score and actual $\Delta F_1$ across all targeted classes and sensor configs. We compare four formulations:
+We empirically validate the benefit score by computing Spearman correlation between benefit score and actual $\Delta F_1$ across all targeted classes and sensor configs, comparing four formulations:
 
-1. **Current** (additive): $(1 - F_1) + \text{discriminability}$
-2. **Product**: $(1 - F_1) \times \text{discriminability}$
-3. **Confusion only**: $1 - F_1$
-4. **Discriminability only**: discriminability
-
-The formulation with highest Spearman $\rho$ is the most principled choice.
+| Formula | Expression |
+|---------|-----------|
+| Additive (ours) | $(1-F_1) + \text{discriminability}$ |
+| Product | $(1-F_1) \times \text{discriminability}$ |
+| Confusion only | $1 - F_1$ |
+| Discriminability only | discriminability |
 
 ---
 
@@ -125,113 +157,57 @@ The formulation with highest Spearman $\rho$ is the most principled choice.
 ```
 sensorIL/
 ├── configs/
-│   └── pipeline_config.json          # Main config (sensors, paths, hyperparams)
+│   └── pipeline_config.json
 ├── scripts/
 │   ├── simclr_encoder.py             # Frozen SimCLR encoder wrapper
 │   ├── dataset.py                    # SensorDataset, UnlabeledFLDataset
-│   ├── cooccurrence.py               # Activity hierarchy, multi-label encoding,
-│   │                                 # get_multilabel(), are_related()
-│   ├── train_base.py                 # ParallelBinaryClassifiers, BinaryClassifier,
-│   │                                 # FocalLoss, train_base()
-│   ├── detect_confusion.py           # Step 2: rank classes by F1, build confusion pairs
-│   ├── estimate_benefit.py           # Step 3: benefit score with confidence-weighted
-│   │                                 # blend of direct + opposition discriminability
-│   ├── incremental_ft.py             # Step 5: PU learning with diverse FL negatives
+│   ├── cooccurrence.py               # Activity hierarchy, multi-label encoding
+│   ├── train_base.py                 # ParallelBinaryClassifiers, train_base()
+│   ├── detect_confusion.py           # Step 2: rank classes by F1, confusion pairs
+│   ├── estimate_benefit.py           # Step 3: benefit score, elbow detection
+│   ├── incremental_ft.py             # Step 5: PU learning, diverse FL negatives
 │   ├── calibrate_thresholds.py       # Per-class threshold calibration [0.2, 0.8]
-│   ├── evaluate.py                   # Independent per-class binary F1, combined table
-│   ├── run_pipeline.py               # Full pipeline runner (Steps 1-6)
+│   ├── evaluate.py                   # Independent per-class binary F1
+│   ├── run_pipeline.py               # Full pipeline (Steps 1-6)
 │   ├── ablation_budget.py            # Annotation budget vs F1 curve
-│   ├── ablation_sensor.py            # Sensor config ablation (all 75 combos)
-│   └── analyze_benefit_score.py      # Post-hoc benefit score correlation analysis
-├── checkpoints/                      # Saved model checkpoints
-│   ├── base_{name}.pt                # Base classifiers per sensor config
-│   ├── incremental_{name}_k{K}.pt    # Incremental classifiers per config + budget
-│   ├── oracle_{name}.pt              # Oracle classifiers per sensor config
-│   ├── *_thresholds.pt               # Calibrated thresholds
-│   ├── ablation_sensor_n{N}_results.json   # Sensor ablation results per n_base
-│   ├── ablation_budget.json          # Budget ablation results
-│   └── benefit_score_analysis.json   # Benefit score correlation analysis
-└── logs/
-    ├── ablation_sensor_n{N}_b{budgets}_{timestamp}.log  # Full stdout per run
-    └── ablation_budget_{timestamp}.log
+│   ├── ablation_sensor.py            # Sensor config ablation (75 combos × 4 budgets)
+│   └── analyze_benefit_score.py      # Benefit score correlation analysis
+├── checkpoints/                      # Model checkpoints + JSON results
+└── logs/                             # Full stdout logs per run
 ```
 
 ---
 
 ## How to Run
 
-### Full pipeline (single sensor config)
+### Full pipeline
 ```bash
-cd ~/sensorIL
 python scripts/run_pipeline.py --config configs/pipeline_config.json
 ```
 
-### Skip base training (use existing checkpoint)
+### Sensor config + budget ablation
 ```bash
-python scripts/run_pipeline.py --config configs/pipeline_config.json \
-    --base-checkpoint checkpoints/base_classifiers.pt
-```
-
-### Sensor config ablation (run one set at a time)
-```bash
-# 1-base configs (20 combos) with budget ablation
-python scripts/ablation_sensor.py \
-    --config   configs/pipeline_config.json \
-    --n-base   1 \
-    --budgets  5,10,15,all
-
-# 2-base configs (30 combos)
+# Run one n_base at a time
+python scripts/ablation_sensor.py --config configs/pipeline_config.json --n-base 1 --budgets 5,10,15,all
 python scripts/ablation_sensor.py --config configs/pipeline_config.json --n-base 2 --budgets 5,10,15,all
-
-# 3-base configs (20 combos)
 python scripts/ablation_sensor.py --config configs/pipeline_config.json --n-base 3 --budgets 5,10,15,all
-
-# 4-base configs (5 combos)
 python scripts/ablation_sensor.py --config configs/pipeline_config.json --n-base 4 --budgets 5,10,15,all
 ```
 
-### Benefit score correlation analysis (run after ablation)
+### Benefit score analysis (after ablation)
 ```bash
-python scripts/analyze_benefit_score.py \
-    --results-dir checkpoints/ \
-    --n-base 1 2 3 4
+python scripts/analyze_benefit_score.py --results-dir checkpoints/ --n-base 1 2 3 4
 ```
 
-### Results location
-- **Logs**: `logs/ablation_sensor_n{N}_b{budgets}_{timestamp}.log` — full stdout with all tables
-- **JSON results**: `checkpoints/ablation_sensor_n{N}_results.json` — saved incrementally after each config
-- **Benefit analysis**: `checkpoints/benefit_score_analysis.json`
-
-### Config file (`configs/pipeline_config.json`)
-Key fields:
+### Config reference
 ```json
 {
-  "sensors": {
-    "known_sensors": ["LeftWrist", "RightAnkle"],
-    "new_sensor":    ["RightThigh"]
-  },
-  "data": {
-    "labeled_dir":   "/path/to/lab/data",
-    "unlabeled_dir": "/path/to/fl/data"
-  },
-  "model": {
-    "encoder_path": "/path/to/simclr.pt"
-  },
-  "finetune": {
-    "few_shot_samples_per_class": 40,
-    "val_split":    0.2,
-    "epochs":       100,
-    "batch_size":   256,
-    "lr":           1e-3,
-    "weight_decay": 1e-4
-  },
-  "active_learning": {
-    "pseudo_label_threshold": 0.7,
-    "n_clusters":             40
-  },
-  "output": {
-    "checkpoint_dir": "checkpoints/",
-    "log_dir":        "logs/"
-  }
+  "sensors": {"known_sensors": ["LeftWrist", "RightAnkle"], "new_sensor": ["RightThigh"]},
+  "data": {"labeled_dir": "/path/to/lab", "unlabeled_dir": "/path/to/fl"},
+  "model": {"encoder_path": "/path/to/simclr.pt"},
+  "finetune": {"few_shot_samples_per_class": 40, "val_split": 0.2,
+               "epochs": 100, "batch_size": 256, "lr": 1e-3, "weight_decay": 1e-4},
+  "active_learning": {"pseudo_label_threshold": 0.7, "n_clusters": 40},
+  "output": {"checkpoint_dir": "checkpoints/", "log_dir": "logs/"}
 }
 ```

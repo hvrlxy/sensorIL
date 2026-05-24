@@ -73,15 +73,9 @@ def targeted_delta(cfg, budget):
                  np.mean([pc[c]['baseline'] for c in tgts]))
 
 def targeted_oracle_delta(cfg, budget='all'):
-    br = get_br(cfg, budget)
-    if not br: return None
-    targets = set(br['target_classes'])
-    if not targets: return None
-    pc   = br['per_class']
-    tgts = [c for c in targets if c in pc]
-    if not tgts: return None
-    return float(np.mean([pc[c]['oracle']   for c in tgts]) -
-                 np.mean([pc[c]['baseline'] for c in tgts]))
+    # Oracle retrains all classes — use overall oracle delta as the reference,
+    # not the subset. This gives a consistent ceiling across all plots.
+    return oracle_delta(cfg)
 
 def get_deltas(configs, cond, prop_fn, orac_fn):
     if cond == 'oracle':

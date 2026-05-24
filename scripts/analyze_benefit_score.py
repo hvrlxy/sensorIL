@@ -203,6 +203,79 @@ def print_report(records, correlations, delta_f1, delta_f1_oracle):
               f"{(pp>0.01).mean()*100:>5.0f}% {len(pp):>6}")
 
 
+def plot_correlation(records, out_dir="."):
+    """
+    Scatter: benefit score vs oracle ΔF1 (top row) and proposed ΔF1 (bottom row),
+    one column per n_base.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from scipy.stats import spearmanr
+
+    plt.rcParams.update({
+        'font.family'      : 'DejaVu Sans',
+        'font.size'        : 11,
+        'axes.spines.top'  : False,
+        'axes.spines.right': False,
+        'figure.dpi'       : 300,
+    })
+
+    nb_colors = {1: '#378ADD', 2: '#1D9E75', 3: '#EF9F27', 4: '#D85A30'}
+    n_bases   = sorted(set(r['n_base'] for r in records))
+
+    fig, axes = plt.subplots(1, len(n_bases),
+                             figsize=(5.5 * len(n_bases), 5))
+    if len(n_bases) == 1:
+        axes = [axes]
+
+    for col, n_base in enumerate(n_bases):
+        recs = [r for r in records if r['n_base'] == n_base]
+        ax   = axes[col]
+        y_key, y_label = 'delta_f1', 'Proposed ΔF1 (end-to-end)' 
+
+
+        benefits     = np.array([r['benefit'] for r in recs])
+        ys           = np.array([r[y_key]     for r in recs])
+        log_benefits = np.log1p(benefits)
+        rho, pval    = spearmanr(log_benefits, ys)
+        color        = nb_colors.get(n_base, '#888888')
+
+        ax.scatter(log_benefits, ys, alpha=0.3, s=15,
+                   color=color, edgecolors='none', zorder=3)
+
+        z  = np.polyfit(log_benefits, ys, 1)
+        xl = np.linspace(log_benefits.min(), log_benefits.max(), 100)
+        ax.plot(xl, np.polyval(z, xl), color='black',
+                linewidth=1.5, linestyle='--', alpha=0.7)
+        ax.axhline(0, color='gray', linewidth=0.6)
+
+        ax.set_xlabel('log(1 + benefit score)', fontsize=10)
+        if col == 0:
+            ax.set_ylabel(y_label, fontsize=10)
+        ax.set_title(f'n_base = {n_base}', fontsize=12, fontweight='bold')
+
+        sig = ('***' if pval < 0.001 else '**' if pval < 0.01
+               else '*' if pval < 0.05 else '')
+        ax.text(0.97, 0.97,
+                f'ρ = {rho:+.3f}{sig}\nn = {len(recs)}',
+                transform=ax.transAxes, ha='right', va='top',
+                fontsize=9,
+                bbox=dict(boxstyle='round,pad=0.3',
+                          facecolor='white', alpha=0.8))
+
+    fig.suptitle('Benefit score vs proposed ΔF1 per targeted activity',
+                 fontsize=13, fontweight='bold', y=1.01)
+    fig.tight_layout()
+
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'benefit_score_correlation.pdf')
+    fig.savefig(path, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Plot saved → {path}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", type=str, required=True)
@@ -251,6 +324,10 @@ def main():
             "records"     : records
         }, f, indent=2)
     print(f"\nSaved → {out}")
+
+    # Plot correlation
+    plot_dir = os.path.join(os.path.dirname(out) or '.', 'plots')
+    plot_correlation(records, out_dir=plot_dir)
 
 
 if __name__ == "__main__":

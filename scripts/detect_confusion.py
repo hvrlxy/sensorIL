@@ -20,6 +20,7 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score, confusion_matrix
+from cooccurrence import get_multilabel
 
 from simclr_encoder import load_simclr_encoder, encode_sensors, ENCODER_DIM
 from dataset import SensorDataset
@@ -74,11 +75,23 @@ def detect_confusion(config, checkpoint_path, device, top_k=None):
                 classifiers[name](z_val)).cpu().numpy()
     preds = scores.argmax(axis=1)
 
-    # Per-class F1
-    f1_scores = f1_score(y_val, preds, average=None,
-                         labels=list(range(n_classes)), zero_division=0)
-    macro_f1  = f1_score(y_val, preds, average="macro",    zero_division=0)
-    wtd_f1    = f1_score(y_val, preds, average="weighted", zero_division=0)
+    # Per-class F1 — multilabel-aware (co-occurrence hierarchy)
+    # Ground truth: a Treadmill window is also positive for Walking etc.
+    ml_matrix = np.array([get_multilabel(name, class_names)
+                          for name in class_names], dtype=np.float32)
+    # y_ml: (N, n_classes) multilabel ground truth
+    y_ml = ml_matrix[y_val]  # (N, n_classes)
+
+    # Predicted scores: use per-class sigmoid scores for binary F1
+    f1_scores = np.zeros(n_classes)
+    for i in range(n_classes):
+        pred_i = (scores[:, i] > 0.5).astype(int)
+        true_i = y_ml[:, i].astype(int)
+        f1_scores[i] = f1_score(true_i, pred_i, zero_division=0)
+
+    macro_f1 = float(f1_scores.mean())
+    wtd_f1   = float(np.average(f1_scores,
+                                weights=y_ml.sum(axis=0) + 1e-10))
     print(f"\nBase model val — Macro F1: {macro_f1:.4f} | Weighted F1: {wtd_f1:.4f}")
 
     # Confusion matrix

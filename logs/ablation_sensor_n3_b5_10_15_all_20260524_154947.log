@@ -1,0 +1,164 @@
+Logging to: /home/hle5/sensorIL/logs/ablation_sensor_n3_b5_10_15_all_20260524_154947.log
+Started: 2026-05-24T15:49:47.138246
+
+======================================================================
+  Running n_base=3: 20 configs
+======================================================================
+
+[1/20] 
+──────────────────────────────────────────────────────────────────────
+  LW_RW_RT__plus_RWa
+  Base: ['LeftWrist', 'RightWrist', 'RightThigh'] → New: ['RightWaist']
+──────────────────────────────────────────────────────────────────────
+  [cached] base checkpoint
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist', 'RightThigh']
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist', 'RightThigh', 'RightWaist']
+
+============================================================
+Step 2: Detecting confused classes
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+[SensorDataset:val] 450 windows | 40 classes | sensors=['LeftWrist', 'RightWrist', 'RightThigh']
+
+Base model val — Macro F1: 0.3236 | Weighted F1: 0.3091
+
+Class                                               F1  Confusion  Confused with
+──────────────────────────────────────────────────────────────────────────────────────────
+Walking                                          0.174        114   
+Standing_With_Movement                           0.152         67   Standing_Still(1), Sit_Writing_Lab(1)
+Standing_Still                                   0.091         60   Lying_On_Left_Side_Lab(6), Standing_With_Movement(2)
+Sitting_With_Movement                            0.151         38   Standing_Still(1)
+Sitting_Still                                    0.522         22   
+Lying_On_Left_Side_Lab                           0.667          9   Sitting_With_Movement(1), Lying_On_Stomach_Lab(1)
+Stand_Conversation_Lab                           0.000          6   Sitting_With_Movement(2), Arm_Curls_Lab(1)
+Lying_On_Stomach_Lab                             0.833          4   Sitting_Still(1), Stand_Conversation_Lab(1)
+Sit_Writing_Lab                                  0.000          3   Standing_Still(2)
+Sit_Recline_Talk_Lab                             0.000          2   Standing_With_Movement(2)
+Arm_Curls_Lab                                    0.000          1   
+Lying_On_Back_Lab                                0.957          1   Sitting_With_Movement(1)
+Lying_On_Right_Side_Lab                          0.957          1   Stand_Conversation_Lab(1)
+Sit_Typing_Lab                                   0.700          1   
+Walking_Down_Stairs                              0.400          1   Standing_With_Movement(1)
+Ab_Crunches_Lab                                  1.000          0   
+Chopping_Food_Lab                                0.909          0   
+Folding_Clothes                                  0.154          0   
+Machine_Chest_Press_Lab                          0.889          0   
+Machine_Leg_Press_Lab                            0.000          0   
+Organizing_Shelf_Cabinet                         0.000          0   
+Playing_Frisbee                                  0.000          0   
+Push_Up_Lab                                      1.000          0   
+Sit_Recline_Web_Browse_Lab                       0.000          0   
+Stand_Shelf_Load_Lab                             0.000          0   
+Stand_Shelf_Unload_Lab                           0.000          0   
+Stationary_Biking_300_Lab                        1.000          0   
+Sweeping                                         0.000          0   
+Treadmill_2mph_Lab                               0.500          0   
+Treadmill_3mph_Briefcase_Lab                     0.000          0   
+Treadmill_3mph_Conversation_Lab                  0.000          0   
+Treadmill_3mph_Drink_Lab                         0.000          0   
+Treadmill_3mph_Free_Walk_Lab                     0.000          0   
+Treadmill_3mph_Hands_Pockets_Lab                 0.000          0   
+Treadmill_3mph_Phone_Lab                         0.000          0   
+Treadmill_4mph_Lab                               0.800          0   
+Treadmill_5_5mph_Lab                             0.000          0   
+Vacuuming                                        0.000          0   
+Walking_Up_Stairs                                0.500          0   
+Washing_Dishes_Lab                               0.588          0   
+
+Top 15 confused classes: ['Walking', 'Standing_With_Movement', 'Standing_Still', 'Sitting_With_Movement', 'Sitting_Still', 'Lying_On_Left_Side_Lab', 'Stand_Conversation_Lab', 'Lying_On_Stomach_Lab', 'Sit_Writing_Lab', 'Sit_Recline_Talk_Lab', 'Arm_Curls_Lab', 'Lying_On_Back_Lab', 'Lying_On_Right_Side_Lab', 'Sit_Typing_Lab', 'Walking_Down_Stairs']
+
+============================================================
+Step 3: Estimating benefit of new sensor
+============================================================
+Loaded SimCLR encoder from /home/hle5/sensorIL/models/20260320-130313_simclr.pt | frozen | dim=96
+Encoding FL data with known sensors (pseudo-labeling)...
+[UnlabeledFLDataset] 437247 windows | sensors=['LeftWrist', 'RightWrist', 'RightThigh']
+Encoding FL data with new sensor only (discriminability)...
+[UnlabeledFLDataset] 437247 windows | sensors=['RightWaist']
+Pseudo-labeling FL data...
+  Ab_Crunches_Lab                               pseudo_labeled=457
+  Arm_Curls_Lab                                 pseudo_labeled=301
+  Chopping_Food_Lab                             pseudo_labeled=3211
+  Folding_Clothes                               pseudo_labeled=3870
+  Lying_On_Left_Side_Lab                        pseudo_labeled=905
+  Lying_On_Right_Side_Lab                       pseudo_labeled=603
+  Lying_On_Stomach_Lab                          pseudo_labeled=2689
+  Machine_Chest_Press_Lab                       pseudo_labeled=54
+  Machine_Leg_Press_Lab                         pseudo_labeled=310
+  Organizing_Shelf_Cabinet                      pseudo_labeled=164
+  Playing_Frisbee                               pseudo_labeled=428
+  Push_Up_Lab                                   pseudo_labeled=116
+  Sit_Recline_Talk_Lab                          pseudo_labeled=16
+  Sit_Recline_Web_Browse_Lab                    pseudo_labeled=481
+  Sit_Typing_Lab                                pseudo_labeled=4625
+  Sit_Writing_Lab                               pseudo_labeled=398
+  Sitting_Still                                 pseudo_labeled=58107
+  Sitting_With_Movement                         pseudo_labeled=63737
+  Stand_Conversation_Lab                        pseudo_labeled=2768
+  Stand_Shelf_Load_Lab                          pseudo_labeled=137
+  Stand_Shelf_Unload_Lab                        pseudo_labeled=208
+  Standing_Still                                pseudo_labeled=24608
+  Standing_With_Movement                        pseudo_labeled=30883
+  Stationary_Biking_300_Lab                     pseudo_labeled=1312
+  Sweeping                                      pseudo_labeled=238
+  Treadmill_2mph_Lab                            pseudo_labeled=3019
+  Treadmill_3mph_Briefcase_Lab                  pseudo_labeled=498
+  Treadmill_3mph_Conversation_Lab               pseudo_labeled=90
+  Treadmill_3mph_Drink_Lab                      pseudo_labeled=1405
+  Treadmill_3mph_Free_Walk_Lab                  pseudo_labeled=1547
+  Treadmill_3mph_Hands_Pockets_Lab              pseudo_labeled=132
+  Treadmill_3mph_Phone_Lab                      pseudo_labeled=172
+  Treadmill_4mph_Lab                            pseudo_labeled=4357
+  Treadmill_5_5mph_Lab                          pseudo_labeled=52
+  Vacuuming                                     pseudo_labeled=334
+  Walking                                       pseudo_labeled=26191
+  Walking_Down_Stairs                           pseudo_labeled=2883
+  Walking_Up_Stairs                             pseudo_labeled=666
+  Washing_Dishes_Lab                            pseudo_labeled=7511
+
+Class                                             1-F1    Discrim    Benefit
+────────────────────────────────────────────────────────────────────────────
+Sit_Recline_Talk_Lab                             1.000     0.5633     1.5633
+Standing_With_Movement                           0.848     0.4141     1.2622
+Sit_Writing_Lab                                  1.000     0.2253     1.2253
+Sitting_With_Movement                            0.849     0.2653     1.1144
+Walking_Down_Stairs                              0.600     0.5096     1.1096
+Stand_Conversation_Lab                           1.000     0.0737     1.0737
+Standing_Still                                   0.909     0.1304     1.0395
+Arm_Curls_Lab                                    1.000     0.0000     1.0000
+Machine_Leg_Press_Lab                            1.000     0.0000     1.0000
+Organizing_Shelf_Cabinet                         1.000     0.0000     1.0000
+Playing_Frisbee                                  1.000     0.0000     1.0000
+Sit_Recline_Web_Browse_Lab                       1.000     0.0000     1.0000
+Stand_Shelf_Load_Lab                             1.000     0.0000     1.0000
+Stand_Shelf_Unload_Lab                           1.000     0.0000     1.0000
+Sweeping                                         1.000     0.0000     1.0000
+Treadmill_3mph_Briefcase_Lab                     1.000     0.0000     1.0000
+Treadmill_3mph_Conversation_Lab                  1.000     0.0000     1.0000
+Treadmill_3mph_Drink_Lab                         1.000     0.0000     1.0000
+Treadmill_3mph_Free_Walk_Lab                     1.000     0.0000     1.0000
+Treadmill_3mph_Hands_Pockets_Lab                 1.000     0.0000     1.0000
+Treadmill_3mph_Phone_Lab                         1.000     0.0000     1.0000
+Treadmill_5_5mph_Lab                             1.000     0.0000     1.0000
+Vacuuming                                        1.000     0.0000     1.0000
+Folding_Clothes                                  0.846     0.0000     0.8462
+Walking                                          0.826     0.0000     0.8261
+Treadmill_2mph_Lab                               0.500     0.0000     0.5000
+Walking_Up_Stairs                                0.500     0.0000     0.5000
+Sitting_Still                                    0.478     0.0000     0.4783
+Washing_Dishes_Lab                               0.412     0.0000     0.4118
+Lying_On_Left_Side_Lab                           0.333     0.0291     0.3625
+Sit_Typing_Lab                                   0.300     0.0000     0.3000
+Treadmill_4mph_Lab                               0.200     0.0000     0.2000
+Lying_On_Stomach_Lab                             0.167     0.0222     0.1889
+Machine_Chest_Press_Lab                          0.111     0.0000     0.1111
+Chopping_Food_Lab                                0.091     0.0000     0.0909
+Lying_On_Right_Side_Lab                          0.043     0.0234     0.0669
+Lying_On_Back_Lab                                0.043     0.0000     0.0435
+Ab_Crunches_Lab                                  0.000     0.0000     0.0000
+Push_Up_Lab                                      0.000     0.0000     0.0000
+Stationary_Biking_300_Lab                        0.000     0.0000     0.0000
+
+Elbow at rank 23 (score=1.0000)
+Classes selected for re-annotation (23): ['Sit_Recline_Talk_Lab', 'Standing_With_Movement', 'Sit_Writing_Lab', 'Sitting_With_Movement', 'Walking_Down_Stairs', 'Stand_Conversation_Lab', 'Standing_Still', 'Arm_Curls_Lab', 'Machine_Leg_Press_Lab', 'Organizing_Shelf_Cabinet', 'Playing_Frisbee', 'Sit_Recline_Web_Browse_Lab', 'Stand_Shelf_Load_Lab', 'Stand_Shelf_Unload_Lab', 'Sweeping', 'Treadmill_3mph_Briefcase_Lab', 'Treadmill_3mph_Conversation_Lab', 'Treadmill_3mph_Drink_Lab', 'Treadmill_3mph_Free_Walk_Lab', 'Treadmill_3mph_Hands_Pockets_Lab', 'Treadmill_3mph_Phone_Lab', 'Treadmill_5_5mph_Lab', 'Vacuuming']

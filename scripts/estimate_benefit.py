@@ -11,6 +11,7 @@ Discriminability uses a confidence-weighted blend:
   discriminability(A) = α × direct + (1-α) × opposition
 
 Selection: elbow detection on sorted benefit scores.
+Fixed-K budgets use the full ranked list (not elbow-limited).
 
 Usage:
     python scripts/estimate_benefit.py --config configs/pipeline_config.json \
@@ -194,24 +195,26 @@ def estimate_benefit(config, base_ckpt_path, confusion_scores, device,
             discrim = float(np.mean(dd)) if dd else 0.0
         print(f"{name:45s} {conf_sig:8.3f} {discrim:10.4f} {score:10.4f}")
 
-    # Elbow detection on positive-score classes
-    pos_scores = [(n, s) for n, s in benefit_ranked if s > 0]
-    pos_values = [s for _, s in pos_scores]
+    # All candidates with positive score (for fixed-K budgets)
+    all_candidates = [(n, s) for n, s in benefit_ranked if s > 0]
+    pos_values     = [s for _, s in all_candidates]
 
+    # Elbow detection for the "all" budget
     if len(pos_values) >= 2:
         elbow_idx      = find_elbow(pos_values)
-        target_classes = [n for n, _ in pos_scores[:elbow_idx + 1]]
+        target_classes = [n for n, _ in all_candidates[:elbow_idx + 1]]
     elif len(pos_values) == 1:
-        target_classes = [pos_scores[0][0]]
+        target_classes = [all_candidates[0][0]]
     else:
         target_classes = []
 
     elbow_score = pos_values[len(target_classes)-1] if target_classes else 0.0
     print(f"\nElbow at rank {len(target_classes)} (score={elbow_score:.4f})")
-    print(f"Classes selected for re-annotation ({len(target_classes)}): "
-          f"{target_classes}")
+    print(f"All candidates ({len(all_candidates)}): {[n for n,_ in all_candidates]}")
+    print(f"Elbow selection ({len(target_classes)}): {target_classes}")
 
-    return benefit_ranked, target_classes
+    # Returns: benefit_ranked, elbow_target_classes, all_candidates
+    return benefit_ranked, target_classes, all_candidates
 
 
 def main():
